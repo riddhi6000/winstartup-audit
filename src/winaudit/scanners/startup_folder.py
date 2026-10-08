@@ -28,6 +28,6 @@ def scan() -> list[AutostartEntry]:
                 command=str(item.resolve()),
                 location=str(folder),
                 scope=scope,
-                created=datetime.fromtimestamp(stat.st_ctime),
+                created=datetime.fromtimestamp(stat.st_birthtime),
             ))
     return entries
