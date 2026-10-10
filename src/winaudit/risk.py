@@ -28,6 +28,13 @@ def assess(entry: AutostartEntry, signature_checker=None) -> RiskAssessment:
         score += 1
         reasons.append(f"Created recently ({entry.created.date()})")
 
+    if entry.source == "Winlogon Helper Key" and entry.extra.get("matches_default") is False:
+        score += 3
+        reasons.append(
+            f"Modified from Windows' expected default for '{entry.name}' — "
+            "this is a well-documented persistence technique"
+        )
+
     is_store_app = "\\windowsapps\\" in command_lower
 
     if is_store_app:

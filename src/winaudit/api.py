@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from .scanners import registry_run, startup_folder, scheduled_tasks, services
+from .scanners import registry_run, startup_folder, scheduled_tasks, services, winlogon
 from . import risk, signature
 
 app = FastAPI(title="Windows Startup Audit")
@@ -18,7 +18,7 @@ app.add_middleware(
 )
 
 STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
-SCANNERS = [registry_run, startup_folder, scheduled_tasks, services]
+SCANNERS = [registry_run, startup_folder, scheduled_tasks, services, winlogon]
 
 
 @app.get("/")
