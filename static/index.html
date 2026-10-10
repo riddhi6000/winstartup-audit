@@ -29,9 +29,59 @@
       cursor: pointer;
       margin-bottom: 1.5rem;
     }
-    #scanBtn:disabled {
+    #scanBtn:disabled, #saveBaselineBtn:disabled {
       background: #555;
       cursor: not-allowed;
+    }
+    #saveBaselineBtn {
+      background: #374151;
+      color: white;
+      border: none;
+      padding: 0.6rem 1.2rem;
+      border-radius: 4px;
+      font-size: 1rem;
+      cursor: pointer;
+      margin-bottom: 1.5rem;
+      margin-left: 0.5rem;
+    }
+    #baselineInfo {
+      color: #9a9a9a;
+      font-size: 0.85rem;
+      margin-bottom: 1rem;
+    }
+    .diff-new { background: rgba(248, 113, 113, 0.08); }
+    .diff-modified { background: rgba(251, 191, 36, 0.08); }
+    .diff-badge-modified {
+      display: inline-block;
+      background: #fbbf24;
+      color: #1e1e1e;
+      font-size: 0.7rem;
+      font-weight: bold;
+      padding: 0.1rem 0.4rem;
+      border-radius: 3px;
+      margin-right: 0.4rem;
+    }
+    #removedSection {
+      margin-top: 1.5rem;
+      display: none;
+    }
+    #removedSection h2 {
+      font-size: 1.1rem;
+      color: #f87171;
+    }
+    #removedSection ul {
+      font-size: 0.85rem;
+      color: #c0c0c0;
+    }
+    .diff-badge {
+      display: inline-block;
+      background: #f87171;
+      color: #1e1e1e;
+      font-size: 0.7rem;
+      font-weight: bold;
+      padding: 0.1rem 0.4rem;
+      border-radius: 3px;
+      margin-right: 0.4rem;
     }
     table {
       width: 100%;
@@ -74,10 +124,17 @@
   <h1>Windows Startup Audit</h1>
   <div id="summary">Click "Run Scan" to audit this machine's autostart locations.</div>
   <button id="scanBtn">Run Scan</button>
+  <button id="saveBaselineBtn">Save Current State as Baseline</button>
+  <div id="baselineInfo"></div>
+  <div id="removedSection">
+    <h2>Removed since baseline</h2>
+    <ul id="removedList"></ul>
+  </div>
   <table id="resultsTable" style="display:none">
     <thead>
       <tr>
         <th>Risk</th>
+        <th></th>
         <th>Source</th>
         <th>Name</th>
         <th>Command / Path</th>
@@ -92,6 +149,10 @@
     const summary = document.getElementById('summary');
     const table = document.getElementById('resultsTable');
     const tbody = document.getElementById('resultsBody');
+    const saveBaselineBtn = document.getElementById('saveBaselineBtn');
+    const baselineInfo = document.getElementById('baselineInfo');
+    const removedSection = document.getElementById('removedSection');
+    const removedList = document.getElementById('removedList');
 
     function scoreClass(score) {
       if (score === 0) return 'score-0';
@@ -120,13 +181,52 @@
         summary.textContent =
           `${data.total_entries} autostart entries found — ${data.flagged_count} flagged for review.`;
 
+        if (data.baseline_saved_at) {
+          const savedDate = new Date(data.baseline_saved_at).toLocaleString();
+          const d = data.diff;
+          baselineInfo.textContent =
+            `Compared against baseline saved ${savedDate}: ` +
+            `${d.new.length} new, ${d.removed.length} removed, ${d.modified.length} modified, ` +
+            `${d.unchanged_count} unchanged.`;
+          if (d.removed.length > 0) {
+            removedList.innerHTML = d.removed
+              .map(e => `<li>${escapeHtml(e.source)}: ${escapeHtml(e.name)} — <span class="command">${escapeHtml(e.command)}</span></li>`)
+              .join('');
+            removedSection.style.display = 'block';
+          } else {
+            removedSection.style.display = 'none';
+          }
+        } else {
+          baselineInfo.textContent = 'No baseline saved yet — click "Save Current State as Baseline" to start tracking changes over time.';
+        }
+
+        const newKeys = new Set(
+          (data.diff?.new || []).map(e => `${e.source}|${e.name}|${e.location}`)
+        );
+        const modifiedMap = new Map(
+          (data.diff?.modified || []).map(m =>
+            [`${m.entry.source}|${m.entry.name}|${m.entry.location}`, m.previous_command]
+          )
+        );
         for (const entry of data.entries) {
           const row = document.createElement('tr');
+          const entryKey = `${entry.source}|${entry.name}|${entry.location}`;
+          const isNew = newKeys.has(entryKey);
+          const previousCommand = modifiedMap.get(entryKey);
+          if (isNew) row.className = 'diff-new';
+          else if (previousCommand !== undefined) row.className = 'diff-modified';
           row.innerHTML = `
             <td class="score-cell ${scoreClass(entry.score)}">${entry.score}</td>
+            <td>
+                ${isNew ? '<span class="diff-badge">NEW</span>' : ''}
+                ${previousCommand !== undefined ? '<span class="diff-badge-modified">CHANGED</span>' : ''}
+            </td>
             <td>${escapeHtml(entry.source)}</td>
             <td>${escapeHtml(entry.name)}</td>
-            <td class="command">${escapeHtml(entry.command)}</td>
+            <td class="command">
+                ${escapeHtml(entry.command)}
+                ${previousCommand !== undefined ? `<br><span style="color:#888">was: ${escapeHtml(previousCommand)}</span>` : ''}
+            </td>
             <td class="reasons">${escapeHtml(entry.reasons.join('; '))}</td>
           `;
           tbody.appendChild(row);
@@ -142,6 +242,21 @@
     }
 
     btn.addEventListener('click', runScan);
+
+    saveBaselineBtn.addEventListener('click', async () => {
+      saveBaselineBtn.disabled = true;
+      saveBaselineBtn.textContent = 'Saving...';
+      try {
+        const response = await fetch('/api/baseline/save', { method: 'POST' });
+        const data = await response.json();
+        baselineInfo.textContent = `Baseline saved — ${data.entry_count} entries recorded.`;
+      } catch (err) {
+        baselineInfo.textContent = `Failed to save baseline: ${err.message}`;
+      } finally {
+        saveBaselineBtn.disabled = false;
+        saveBaselineBtn.textContent = 'Save Current State as Baseline';
+      }
+    });
   </script>
 </body>
 </html>
