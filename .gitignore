@@ -13,3 +13,6 @@ sample_output/*.json
 
 # Baseline scan data (machine-specific, not source code)
 baseline.json
+
+# Secrets
+.env
