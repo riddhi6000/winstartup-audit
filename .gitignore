@@ -16,3 +16,6 @@ baseline.json
 
 # Secrets
 .env
+
+# Local hash cache
+hash_cache.db
