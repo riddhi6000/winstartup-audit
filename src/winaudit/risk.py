@@ -28,8 +28,12 @@ def assess(entry: AutostartEntry, signature_checker=None) -> RiskAssessment:
         score += 1
         reasons.append(f"Created recently ({entry.created.date()})")
 
-    if signature_checker is not None:
-        exe_path = _extract_exe_path(entry.command)
+    is_store_app = "\\windowsapps\\" in command_lower
+
+    if is_store_app:
+        reasons.append("Installed via Microsoft Store (WindowsApps) — signature not independently checkable this way, treated as trusted location")
+    elif signature_checker is not None:
+        exe_path = extract_exe_path(entry.command)
         if exe_path and os.path.exists(exe_path):
             if not signature_checker(exe_path):
                 score += 2
@@ -40,12 +44,21 @@ def assess(entry: AutostartEntry, signature_checker=None) -> RiskAssessment:
 
     return RiskAssessment(entry=entry, score=score, reasons=reasons)
 
-
-def _extract_exe_path(command: str) -> str | None:
+def extract_exe_path(command: str) -> str | None:
     """Commands often come with quoted paths + arguments, e.g.
-    '"C:\\Program Files\\App\\app.exe" --silent' — pull out just the exe path."""
+    '"C:\\Program Files\\App\\app.exe" --silent' -- pull out just the exe path.
+    For unquoted commands, naive space-splitting breaks on paths that
+    themselves contain spaces (e.g. "...\\Windows Defender\\...\\MpCmdRun.exe
+    -Arg"), so we instead find where a known executable extension ends and
+    cut there."""
     command = command.strip()
     if command.startswith('"'):
         end = command.find('"', 1)
         return command[1:end] if end > 0 else None
+
+    lower = command.lower()
+    for ext in (".exe", ".dll", ".com"):
+        idx = lower.find(ext)
+        if idx != -1:
+            return command[:idx + len(ext)]
     return command.split(" ")[0]
