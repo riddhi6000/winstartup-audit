@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .scanners import registry_run, startup_folder, scheduled_tasks, services, winlogon
 from . import risk, signature
+from .baseline import save_baseline, load_baseline, diff as diff_entries
 
 app = FastAPI(title="Windows Startup Audit")
 
@@ -17,7 +18,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+STATIC_DIR = PROJECT_ROOT / "static"
+BASELINE_PATH = PROJECT_ROOT / "baseline.json"
 SCANNERS = [registry_run, startup_folder, scheduled_tasks, services, winlogon]
 
 
@@ -26,15 +29,16 @@ def serve_dashboard():
     return FileResponse(STATIC_DIR / "index.html")
 
 
-@app.get("/api/scan")
-def run_scan():
+def perform_scan() -> list[dict]:
+    """Runs all five scanners and risk-assesses every entry. This is the
+    one shared implementation behind both /api/scan and
+    /api/baseline/save, so there's exactly one place that defines 'what a
+    scan actually is' -- the two endpoints just do different things with
+    the same result."""
     all_entries = []
     for scanner in SCANNERS:
         all_entries.extend(scanner.scan())
 
-    # Only worth signature-checking paths that actually exist on disk --
-    # many commands (shell one-liners, unexpanded %env% paths) aren't real
-    # files, and checking them would just waste a PowerShell call each.
     exe_paths = set()
     for entry in all_entries:
         path = risk.extract_exe_path(entry.command)
@@ -46,8 +50,6 @@ def run_scan():
     def sig_checker(path: str) -> bool:
         result = signature_results.get(path, {})
         if not result.get("checked", True):
-            # Still inconclusive even after retry -- don't penalize the
-            # score for something we genuinely couldn't verify.
             return True
         return result.get("signed", False)
 
@@ -70,9 +72,29 @@ def run_scan():
         })
 
     results.sort(key=lambda r: r["score"], reverse=True)
+    return results
+
+
+@app.get("/api/scan")
+def run_scan():
+    results = perform_scan()
+    baseline_data = load_baseline(BASELINE_PATH)
+
+    diff_result = None
+    if baseline_data is not None:
+        diff_result = diff_entries(results, baseline_data["entries"])
 
     return {
         "total_entries": len(results),
         "flagged_count": sum(1 for r in results if r["score"] > 0),
         "entries": results,
+        "baseline_saved_at": baseline_data["saved_at"] if baseline_data else None,
+        "diff": diff_result,
     }
+
+
+@app.post("/api/baseline/save")
+def save_current_as_baseline():
+    results = perform_scan()
+    save_baseline(results, BASELINE_PATH)
+    return {"saved": True, "entry_count": len(results)}

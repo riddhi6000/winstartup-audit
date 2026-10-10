@@ -10,3 +10,6 @@ venv/
 # Project output
 sample_output/*.json
 !sample_output/example_report.json
+
+# Baseline scan data (machine-specific, not source code)
+baseline.json

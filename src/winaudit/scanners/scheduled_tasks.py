@@ -11,6 +11,7 @@ def scan() -> list[AutostartEntry]:
     )
     reader = csv.DictReader(io.StringIO(result.stdout))
     entries = []
+    seen_task_names = set()
     for row in reader:
         task_name = row.get("TaskName", "")
         if not task_name or task_name == "TaskName":
@@ -18,6 +19,9 @@ def scan() -> list[AutostartEntry]:
         command = row.get("Task To Run", "")
         if not command or command == "N/A":
             continue  # disabled or no-op tasks aren't worth flagging
+        if task_name in seen_task_names:
+            continue  # schtasks /v repeats a row per trigger for multi-trigger tasks
+        seen_task_names.add(task_name)
         entries.append(AutostartEntry(
             source="Scheduled Task",
             name=task_name,
