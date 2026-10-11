@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .scanners import registry_run, startup_folder, scheduled_tasks, services, winlogon
-from . import risk, signature
+from . import risk, signature, virustotal
 from .baseline import save_baseline, load_baseline, diff as diff_entries
 
 app = FastAPI(title="Windows Startup Audit")
@@ -69,7 +69,46 @@ def perform_scan() -> list[dict]:
             "score": assessment.score,
             "reasons": assessment.reasons,
             "publisher": publisher,
+            "virustotal": None,  # filled in below, only for flagged entries
         })
+
+    # Only ever check VirusTotal for entries our own risk scoring already
+    # flagged -- this respects the free-tier rate limit (checking all 286+
+    # entries every scan would be both wasteful and far too slow) and
+    # focuses VirusTotal's slower, more authoritative answer on exactly
+    # the handful of things actually worth it.
+    for result in results:
+        if result["score"] == 0:
+            continue
+        exe_path = risk.extract_exe_path(result["command"])
+        if not exe_path or not os.path.exists(exe_path):
+            continue
+        vt_result = virustotal.check_file(exe_path)
+        result["virustotal"] = vt_result
+
+        if "error" not in vt_result and vt_result.get("found"):
+            malicious = vt_result["malicious_count"]
+            total = vt_result["total_engines"]
+            ratio = malicious / total if total else 0
+
+            # Below 10%: a single stray engine out of dozens is common
+            # noise, not a meaningful signal -- ignore it entirely rather
+            # than let it dilute genuinely important flags with clutter.
+            if ratio >= 0.6:
+                result["score"] += 15
+                result["reasons"].append(
+                    f"VirusTotal: {malicious}/{total} security vendors flag this file as malicious — strong consensus"
+                )
+            elif ratio >= 0.3:
+                result["score"] += 10
+                result["reasons"].append(
+                    f"VirusTotal: {malicious}/{total} security vendors flag this file as malicious"
+                )
+            elif ratio >= 0.1:
+                result["score"] += 5
+                result["reasons"].append(
+                    f"VirusTotal: {malicious}/{total} security vendors flag this file as suspicious"
+                )
 
     results.sort(key=lambda r: r["score"], reverse=True)
     return results

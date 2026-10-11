@@ -87,6 +87,7 @@ def check_file(file_path: str) -> dict:
             "sha256": file_hash,
             "malicious_count": cached["malicious_count"],
             "total_engines": cached["total_engines"],
+            "found": cached["total_engines"] > 0,
             "from_cache": True,
         }
 
@@ -105,5 +106,6 @@ def check_file(file_path: str) -> dict:
         "sha256": file_hash,
         "malicious_count": result["malicious_count"],
         "total_engines": result["total_engines"],
+        "found": result["found"],
         "from_cache": False,
     }
