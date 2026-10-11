@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 import requests
 from dotenv import load_dotenv
 
+from . import hash_cache
+
 load_dotenv()
 
 API_URL = "https://www.virustotal.com/api/v3/files/{hash}"
@@ -69,4 +71,39 @@ def check_hash(file_hash: str) -> dict:
         "malicious_count": malicious + suspicious,
         "total_engines": total,
         "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+def check_file(file_path: str) -> dict:
+    """The main entry point for checking a file against VirusTotal.
+    Checks the local cache first; only calls the real API on a cache miss,
+    then stores whatever it learns so every future check of this exact
+    file -- this scan or any later one -- is free and instant.
+    """
+    file_hash = hash_cache.compute_sha256(file_path)
+
+    cached = hash_cache.get_cached_result(file_hash)
+    if cached is not None:
+        return {
+            "sha256": file_hash,
+            "malicious_count": cached["malicious_count"],
+            "total_engines": cached["total_engines"],
+            "from_cache": True,
+        }
+
+    result = check_hash(file_hash)
+    if "error" in result:
+        return {"sha256": file_hash, "error": result["error"], "from_cache": False}
+
+    hash_cache.store_result(
+        file_hash,
+        malicious_count=result["malicious_count"],
+        total_engines=result["total_engines"],
+        checked_at=result["checked_at"],
+    )
+
+    return {
+        "sha256": file_hash,
+        "malicious_count": result["malicious_count"],
+        "total_engines": result["total_engines"],
+        "from_cache": False,
     }
