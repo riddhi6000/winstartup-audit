@@ -1,66 +1,189 @@
 import concurrent.futures
-import re
+import json
+import os
 import subprocess
 
 
+# This script is constant. The file path is passed through the environment,
+# rather than interpolated into PowerShell source code.
+_POWERSHELL_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+
+try {
+    $target = $env:WINAUDIT_AUTHENTICODE_TARGET
+
+    if ([string]::IsNullOrWhiteSpace($target)) {
+        throw 'No target path was supplied.'
+    }
+
+    $sig = Get-AuthenticodeSignature -LiteralPath $target
+
+    $subject = ''
+    if ($null -ne $sig.SignerCertificate) {
+        $subject = $sig.SignerCertificate.Subject
+    }
+
+    [PSCustomObject]@{
+        status  = [string]$sig.Status
+        subject = $subject
+    } | ConvertTo-Json -Compress
+}
+catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 2
+}
+"""
+
+
+def _inconclusive(status: str | None = None) -> dict:
+    """Return a result when signature verification could not conclude."""
+    return {
+        "signed": False,
+        "publisher": None,
+        "checked": False,
+        "status": status or "CheckFailed",
+    }
+
+
 def check_signature(exe_path: str, timeout: int = 15) -> dict:
-    """Checks whether a file is digitally signed, and if so, by whom.
-    Returns {"signed": bool, "publisher": str|None, "checked": bool}.
-    "checked" is False when we couldn't get a conclusive answer (e.g. a
-    timeout under load) -- this is NOT the same as a confirmed "unsigned"
-    result, and callers should treat it differently.
+    """Check a file's Authenticode signature without interpolating its path.
+
+    Returns:
+        signed: True only when Windows reports a valid signature.
+        publisher: Certificate subject, when available.
+        checked: Whether a conclusive signature status was obtained.
+        status: The actual Authenticode status or a failure status.
+
+    An invalid signature is distinct from an unsigned file. A failed or
+    inconclusive check must not be interpreted as proof that a file is
+    unsigned.
     """
-    ps_command = (
-        f"$sig = Get-AuthenticodeSignature -LiteralPath '{exe_path}'; "
-        "if ($sig.Status -eq 'Valid') { $sig.SignerCertificate.Subject } "
-        "else { 'NOT_SIGNED' }"
-    )
+    if not isinstance(exe_path, str) or not exe_path.strip():
+        return _inconclusive("InvalidPath")
+
+    if timeout <= 0:
+        return _inconclusive("InvalidTimeout")
+
+    env = os.environ.copy()
+    env["WINAUDIT_AUTHENTICODE_TARGET"] = exe_path
+
     try:
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps_command],
-            capture_output=True, text=True, timeout=timeout,
+            [
+                "powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                _POWERSHELL_SCRIPT,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+            env=env,
         )
-    except (subprocess.TimeoutExpired, OSError):
-        return {"signed": False, "publisher": None, "checked": False}
+    except subprocess.TimeoutExpired:
+        return _inconclusive("Timeout")
+    except OSError:
+        # Includes PowerShell not being available or failing to launch.
+        return _inconclusive("ExecutionFailed")
+
+    if result.returncode != 0:
+        return _inconclusive("ExecutionFailed")
 
     output = result.stdout.strip()
-    if not output or output == "NOT_SIGNED":
-        return {"signed": False, "publisher": None, "checked": True}
+    if not output:
+        return _inconclusive("EmptyOutput")
 
-    # The certificate subject looks like:
-    # CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US
-    match = re.search(r"CN=([^,]+)", output)
-    publisher = match.group(1).strip() if match else None
-    return {"signed": True, "publisher": publisher, "checked": True}
+    try:
+        payload = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return _inconclusive("InvalidOutput")
+
+    status = payload.get("status")
+    subject = payload.get("subject", "")
+
+    if not isinstance(status, str) or not status:
+        return _inconclusive("MissingStatus")
+
+    # Only Valid establishes a valid Authenticode signature.
+    if status == "Valid":
+        return {
+            "signed": True,
+            "publisher": subject or None,
+            "checked": True,
+            "status": status,
+        }
+
+    # NotSigned is a conclusive unsigned result. Other statuses must not
+    # be collapsed into NotSigned.
+    if status == "NotSigned":
+        return {
+            "signed": False,
+            "publisher": None,
+            "checked": True,
+            "status": status,
+        }
+
+    # Preserve invalid or unsupported statuses for the risk layer to
+    # interpret explicitly in a subsequent change.
+    if status in {"HashMismatch", "NotTrusted"}:
+        return {
+            "signed": False,
+            "publisher": subject or None,
+            "checked": True,
+            "status": status,
+        }
+
+    return _inconclusive(status)
 
 
 def is_signed(exe_path: str) -> bool:
-    return check_signature(exe_path)["signed"]
+    """Compatibility helper: True only for a confirmed valid signature."""
+    result = check_signature(exe_path)
+    return result["checked"] and result["signed"]
 
 
-def batch_check(exe_paths: list[str], max_workers: int = 6) -> dict[str, dict]:
-    """Checks many files for valid signatures AND publisher identity at
-    once. Deduplicates identical paths, checks the remaining unique paths
-    in parallel (each check shells out to PowerShell and spends nearly all
-    its time waiting on that process, not doing CPU work -- a good fit for
-    a thread pool), then retries anything inconclusive ONE AT A TIME with
-    more room to breathe -- a few stragglers running alone are far less
-    likely to time out than 12 processes all competing at once.
-    """
+def batch_check(
+    exe_paths: list[str],
+    max_workers: int = 6,
+) -> dict[str, dict]:
+    """Check unique paths concurrently and retry inconclusive checks once."""
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1")
+
     unique_paths = sorted(set(exe_paths))
     results: dict[str, dict] = {}
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_to_path = {pool.submit(check_signature, path): path for path in unique_paths}
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=max_workers
+    ) as pool:
+        future_to_path = {
+            pool.submit(check_signature, path): path
+            for path in unique_paths
+        }
+
         for future in concurrent.futures.as_completed(future_to_path):
             path = future_to_path[future]
             try:
                 results[path] = future.result()
             except Exception:
-                results[path] = {"signed": False, "publisher": None, "checked": False}
+                # One failed worker must not abort the complete batch.
+                results[path] = _inconclusive("WorkerFailed")
 
-    inconclusive = [path for path, r in results.items() if not r["checked"]]
-    for path in inconclusive:
-        results[path] = check_signature(path, timeout=20)
+    inconclusive_paths = [
+        path for path, result in results.items()
+        if not result["checked"]
+    ]
+
+    for path in inconclusive_paths:
+        try:
+            results[path] = check_signature(path, timeout=20)
+        except Exception:
+            results[path] = _inconclusive("RetryFailed")
 
     return results
