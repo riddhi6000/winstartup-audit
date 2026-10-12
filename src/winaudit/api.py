@@ -57,11 +57,16 @@ def perform_scan() -> list[dict]:
 
     signature_results = signature.batch_check(list(exe_paths))
 
-    def sig_checker(path: str) -> bool:
-        result = signature_results.get(path, {})
-        if not result.get("checked", True):
-            return True
-        return result.get("signed", False)
+    def sig_checker(path: str) -> dict:
+        return signature_results.get(
+            path,
+            {
+                "signed": False,
+                "publisher": None,
+                "checked": False,
+                "status": "UnknownError",
+            },
+        )
 
     results = []
     for entry in all_entries:
@@ -79,7 +84,17 @@ def perform_scan() -> list[dict]:
             "score": assessment.score,
             "reasons": assessment.reasons,
             "publisher": publisher,
-            "virustotal": None,  # filled in below, only for flagged entries
+            "signature_status": (
+                signature_results.get(exe_path, {}).get("status")
+                if exe_path
+                else None
+            ),
+            "signature_status_message": (
+                    signature_results.get(exe_path, {}).get("status_message")
+                    if exe_path
+                    else None
+            ),
+            "virustotal": None,
         })
 
     # Only ever check VirusTotal for entries our own risk scoring already
@@ -104,12 +119,28 @@ def perform_scan() -> list[dict]:
             # Below 10%: a single stray engine out of dozens is common
             # noise, not a meaningful signal -- ignore it entirely rather
             # than let it dilute genuinely important flags with clutter.
+
             if ratio >= 0.6:
-                add_reason(result, 3, f"Changed since last baseline (was: {modified_lookup[key]})")
+                add_reason(
+                    result,
+                    15,
+                    f"VirusTotal: {malicious}/{total} security vendors flag "
+                    "this file as malicious — strong consensus",
+                )
             elif ratio >= 0.3:
-                add_reason(result, 3, f"Changed since last baseline (was: {modified_lookup[key]})")
+                add_reason(
+                    result,
+                    10,
+                    f"VirusTotal: {malicious}/{total} security vendors flag "
+                    "this file as malicious",
+                )
             elif ratio >= 0.1:
-                add_reason(result, 3, f"Changed since last baseline (was: {modified_lookup[key]})")
+                add_reason(
+                    result,
+                    5,
+                    f"VirusTotal: {malicious}/{total} security vendors flag "
+                    "this file as suspicious",
+                )
 
     results.sort(key=lambda r: r["score"], reverse=True)
     return results
@@ -167,7 +198,13 @@ def run_scan():
                 key = (entry_dict["source"], entry_dict["name"], entry_dict["location"])
                 for result in results:
                     if (result["source"], result["name"], result["location"]) == key:
-                        add_reason(result, 3, f"Changed since last baseline (was: {modified_lookup[key]})")
+                        add_reason(
+                            result,
+                            4,
+                            "New autostart entry, but the executable itself is not new — "
+                            "possible reuse of an existing trusted binary "
+                            "(living-off-the-land pattern)",
+                        )
                         break
 
         results.sort(key=lambda r: r["score"], reverse=True)

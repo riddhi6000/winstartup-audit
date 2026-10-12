@@ -18,7 +18,20 @@ def assess(entry: AutostartEntry, signature_checker=None) -> RiskAssessment:
     score = 0
     reasons = []
 
+    # Winlogon values control programs launched during sign-in.
+    # A deviation from the expected default deserves explicit review.
+    # Only act when the scanner has explicitly identified a mismatch.
+    if (
+        entry.source == "Winlogon Helper Key"
+        and entry.extra.get("matches_default") is False
+    ):
+        score += 4
+        reasons.append(
+            f"Winlogon value '{entry.name}' differs from its expected default"
+        )
+
     command_lower = entry.command.lower()
+
     exe_path = extract_exe_path(entry.command)
     exe_exists = bool(exe_path and os.path.exists(exe_path))
 
@@ -47,12 +60,60 @@ def assess(entry: AutostartEntry, signature_checker=None) -> RiskAssessment:
 
     is_store_app = "\\windowsapps\\" in command_lower
 
+
     if is_store_app:
-        reasons.append("Installed via Microsoft Store (WindowsApps) — signature not independently checkable this way, treated as trusted location")
+        reasons.append(
+            "Installed via Microsoft Store (WindowsApps) — "
+            "signature not independently checked"
+        )
     elif signature_checker is not None and exe_exists:
-        if not signature_checker(exe_path):
+        signature_result = signature_checker(exe_path)
+
+        # Support both the richer result dictionary and the old Boolean
+        # interface, so existing callers do not break unexpectedly.
+        if isinstance(signature_result, dict):
+            status = signature_result.get("status", "UnknownError")
+            checked = signature_result.get("checked", False)
+            signed = signature_result.get("signed", False)
+            status_message = signature_result.get("status_message", "")
+
+            if status == "Valid" and checked and signed:
+                pass  # Signature is valid; no signature-related penalty.
+
+            elif status == "NotSigned" and checked:
+                score += 2
+                reasons.append("Executable is not digitally signed")
+
+            elif status in ("HashMismatch", "NotTrusted"):
+                score += 4
+                reasons.append(
+                    f"Executable signature has a trust concern ({status})"
+                )
+
+            elif (
+                status == "UnknownError"
+                and "root certificate" in status_message.lower()
+                and "not trusted" in status_message.lower()
+            ):
+                score += 4
+                reasons.append(
+                    "Signature certificate chain terminates at an untrusted root certificate"
+                )
+                
+            else:
+                # A failed or inconclusive check is not proof of malware,
+                # but it also must not be silently treated as trusted.
+                score += 1
+                reasons.append(
+                    f"Executable signature could not be verified conclusively "
+                    f"({status})"
+                )
+
+        elif not signature_result:
+            # Backward compatibility for callers returning a Boolean.
             score += 2
             reasons.append("Executable is not digitally signed")
+
 
     if not reasons:
         reasons.append(NO_FLAGS_REASON)

@@ -25,8 +25,9 @@ try {
     }
 
     [PSCustomObject]@{
-        status  = [string]$sig.Status
-        subject = $subject
+        status         = [string]$sig.Status
+        status_message = [string]$sig.StatusMessage
+        subject        = $subject
     } | ConvertTo-Json -Compress
 }
 catch {
@@ -106,6 +107,7 @@ def check_signature(exe_path: str, timeout: int = 15) -> dict:
 
     status = payload.get("status")
     subject = payload.get("subject", "")
+    status_message = payload.get("status_message", "")
 
     if not isinstance(status, str) or not status:
         return _inconclusive("MissingStatus")
@@ -117,6 +119,7 @@ def check_signature(exe_path: str, timeout: int = 15) -> dict:
             "publisher": subject or None,
             "checked": True,
             "status": status,
+            "status_message": status_message,
         }
 
     # NotSigned is a conclusive unsigned result. Other statuses must not
@@ -127,6 +130,7 @@ def check_signature(exe_path: str, timeout: int = 15) -> dict:
             "publisher": None,
             "checked": True,
             "status": status,
+            "status_message": status_message,
         }
 
     # Preserve invalid or unsupported statuses for the risk layer to
@@ -137,9 +141,13 @@ def check_signature(exe_path: str, timeout: int = 15) -> dict:
             "publisher": subject or None,
             "checked": True,
             "status": status,
+            "status_message": status_message,
         }
 
-    return _inconclusive(status)
+    result = _inconclusive(status)
+    result["publisher"] = subject or None
+    result["status_message"] = status_message
+    return result
 
 
 def is_signed(exe_path: str) -> bool:
