@@ -134,3 +134,75 @@ def test_missing_signature_result_is_not_treated_as_valid(executable):
     )
 
     assert result.score > 0
+
+def make_winlogon_entry(value_name, command, matches_default):
+    return AutostartEntry(
+        source="Winlogon Helper Key",
+        name=value_name,
+        command=command,
+        location=r"HKLM\Software\Microsoft\Windows NT\CurrentVersion\Winlogon",
+        scope="all users",
+        created=datetime.now() - timedelta(days=90),
+        extra={"matches_default": matches_default},
+    )
+
+
+def test_winlogon_default_value_has_no_mismatch_penalty():
+    entry = make_winlogon_entry(
+        "Shell",
+        "explorer.exe",
+        True,
+    )
+
+    result = risk.assess(entry)
+
+    assert result.score == 0
+    assert not any("Winlogon value" in reason for reason in result.reasons)
+
+
+def test_winlogon_modified_value_gets_four_points():
+    entry = make_winlogon_entry(
+        "Shell",
+        r"C:\Suspicious\shell.exe",
+        False,
+    )
+
+    result = risk.assess(entry)
+
+    assert result.score == 4
+    assert any(
+        "Winlogon value 'Shell' differs from its expected default" in reason
+        for reason in result.reasons
+    )
+
+
+def test_winlogon_mismatch_identifies_userinit():
+    entry = make_winlogon_entry(
+        "Userinit",
+        r"C:\Suspicious\userinit.exe",
+        False,
+    )
+
+    result = risk.assess(entry)
+
+    assert result.score == 4
+    assert any(
+        "Winlogon value 'Userinit' differs from its expected default" in reason
+        for reason in result.reasons
+    )
+
+
+def test_winlogon_without_comparison_result_is_not_declared_malicious():
+    entry = make_winlogon_entry(
+        "Shell",
+        "explorer.exe",
+        None,
+    )
+
+    # Simulate a missing/inconclusive comparison result.
+    entry.extra = {}
+
+    result = risk.assess(entry)
+
+    assert result.score == 0
+    assert not any("Winlogon value" in reason for reason in result.reasons)

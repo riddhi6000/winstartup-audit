@@ -29,7 +29,12 @@ def scan() -> list[AutostartEntry]:
                     command=data,
                     location=f"HKLM\\{WINLOGON_KEY}",
                     scope="all users",
-                    extra={"matches_default": data.strip().lower() == expected.strip().lower()},
+                    extra={
+                        "matches_default": (
+                            isinstance(data, str)
+                            and data.strip().lower() == expected.strip().lower()
+                        )
+                    },
                 ))
     except FileNotFoundError:
         pass  # Winlogon key itself missing -- shouldn't happen on real Windows, but don't crash over it
