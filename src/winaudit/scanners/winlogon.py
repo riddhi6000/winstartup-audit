@@ -17,11 +17,23 @@ def scan() -> list[AutostartEntry]:
     entries = []
     try:
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, WINLOGON_KEY) as key:
+
             for value_name, expected in EXPECTED_DEFAULTS.items():
                 try:
                     data, _ = winreg.QueryValueEx(key, value_name)
                 except FileNotFoundError:
-                    continue  # value isn't set -- nothing to report
+                    entries.append(AutostartEntry(
+                        source="Winlogon Helper Key",
+                        name=value_name,
+                        command="",
+                        location=f"HKLM\\{WINLOGON_KEY}",
+                        scope="all users",
+                        extra={
+                            "matches_default": False,
+                            "missing_value": True,
+                        },
+                    ))
+                    continue
 
                 entries.append(AutostartEntry(
                     source="Winlogon Helper Key",
@@ -36,6 +48,7 @@ def scan() -> list[AutostartEntry]:
                         )
                     },
                 ))
+
     except FileNotFoundError:
         pass  # Winlogon key itself missing -- shouldn't happen on real Windows, but don't crash over it
 

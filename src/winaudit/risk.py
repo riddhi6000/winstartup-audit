@@ -21,14 +21,17 @@ def assess(entry: AutostartEntry, signature_checker=None) -> RiskAssessment:
     # Winlogon values control programs launched during sign-in.
     # A deviation from the expected default deserves explicit review.
     # Only act when the scanner has explicitly identified a mismatch.
-    if (
-        entry.source == "Winlogon Helper Key"
-        and entry.extra.get("matches_default") is False
-    ):
-        score += 4
-        reasons.append(
-            f"Winlogon value '{entry.name}' differs from its expected default"
-        )
+    if entry.source == "Winlogon Helper Key":
+        if entry.extra.get("missing_value") is True:
+            score += 4
+            reasons.append(
+                f"Winlogon value '{entry.name}' is missing"
+            )
+        elif entry.extra.get("matches_default") is False:
+            score += 4
+            reasons.append(
+                f"Winlogon value '{entry.name}' differs from its expected default"
+            )
 
     command_lower = entry.command.lower()
 
@@ -99,7 +102,7 @@ def assess(entry: AutostartEntry, signature_checker=None) -> RiskAssessment:
                 reasons.append(
                     "Signature certificate chain terminates at an untrusted root certificate"
                 )
-                
+
             else:
                 # A failed or inconclusive check is not proof of malware,
                 # but it also must not be silently treated as trusted.

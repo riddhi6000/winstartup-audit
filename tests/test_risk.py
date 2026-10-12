@@ -206,3 +206,15 @@ def test_winlogon_without_comparison_result_is_not_declared_malicious():
 
     assert result.score == 0
     assert not any("Winlogon value" in reason for reason in result.reasons)
+
+def test_missing_winlogon_value_gets_explicit_risk_reason():
+    entry = make_winlogon_entry("Userinit", "", False)
+    entry.extra = {
+        "missing_value": True,
+        "matches_default": False,
+    }
+
+    result = risk.assess(entry)
+
+    assert result.score == 4
+    assert "Winlogon value 'Userinit' is missing" in result.reasons

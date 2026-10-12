@@ -67,13 +67,30 @@ def test_scan_marks_modified_shell(monkeypatch):
     assert shell.extra["matches_default"] is False
 
 
-def test_scan_skips_missing_registry_values(monkeypatch):
+
+def test_scan_reports_missing_userinit(monkeypatch):
     setup_registry(monkeypatch, {"Shell": "explorer.exe"})
 
     entries = winlogon.scan()
+    userinit = next(entry for entry in entries if entry.name == "Userinit")
 
-    assert any(entry.name == "Shell" for entry in entries)
-    assert not any(entry.name == "Userinit" for entry in entries)
+    assert userinit.command == ""
+    assert userinit.extra["missing_value"] is True
+    assert userinit.extra["matches_default"] is False
+
+
+def test_scan_reports_missing_shell(monkeypatch):
+    setup_registry(
+        monkeypatch,
+        {"Userinit": r"C:\Windows\system32\userinit.exe,"},
+    )
+
+    entries = winlogon.scan()
+    shell = next(entry for entry in entries if entry.name == "Shell")
+
+    assert shell.command == ""
+    assert shell.extra["missing_value"] is True
+
 
 
 def test_scan_handles_non_string_registry_data(monkeypatch):
