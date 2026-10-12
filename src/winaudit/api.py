@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .scanners import registry_run, startup_folder, scheduled_tasks, services, winlogon
 from . import risk, signature, virustotal
 from .baseline import save_baseline, load_baseline, diff as diff_entries
+from datetime import datetime, timedelta
 
 app = FastAPI(title="Windows Startup Audit")
 
@@ -28,6 +29,15 @@ SCANNERS = [registry_run, startup_folder, scheduled_tasks, services, winlogon]
 def serve_dashboard():
     return FileResponse(STATIC_DIR / "index.html")
 
+def add_reason(result: dict, points: int, reason: str) -> None:
+    """Adds a score-raising reason after assess() has already run.
+    Strips the 'no red flags' placeholder first if present -- that
+    placeholder is only valid while nothing else has been found, and
+    everything calling this function is, by definition, something else."""
+    if result["reasons"] == [risk.NO_FLAGS_REASON]:
+        result["reasons"] = []
+    result["score"] += points
+    result["reasons"].append(reason)
 
 def perform_scan() -> list[dict]:
     """Runs all five scanners and risk-assesses every entry. This is the
@@ -95,20 +105,11 @@ def perform_scan() -> list[dict]:
             # noise, not a meaningful signal -- ignore it entirely rather
             # than let it dilute genuinely important flags with clutter.
             if ratio >= 0.6:
-                result["score"] += 15
-                result["reasons"].append(
-                    f"VirusTotal: {malicious}/{total} security vendors flag this file as malicious — strong consensus"
-                )
+                add_reason(result, 3, f"Changed since last baseline (was: {modified_lookup[key]})")
             elif ratio >= 0.3:
-                result["score"] += 10
-                result["reasons"].append(
-                    f"VirusTotal: {malicious}/{total} security vendors flag this file as malicious"
-                )
+                add_reason(result, 3, f"Changed since last baseline (was: {modified_lookup[key]})")
             elif ratio >= 0.1:
-                result["score"] += 5
-                result["reasons"].append(
-                    f"VirusTotal: {malicious}/{total} security vendors flag this file as suspicious"
-                )
+                add_reason(result, 3, f"Changed since last baseline (was: {modified_lookup[key]})")
 
     results.sort(key=lambda r: r["score"], reverse=True)
     return results
@@ -122,6 +123,54 @@ def run_scan():
     diff_result = None
     if baseline_data is not None:
         diff_result = diff_entries(results, baseline_data["entries"])
+
+        # A modified entry is exactly the general case of what we built
+        # dedicated Winlogon detection for -- something trusted silently
+        # changed. Score it accordingly, consistent with that reasoning,
+        # rather than only surfacing the change visually.
+        modified_lookup = {
+            (m["entry"]["source"], m["entry"]["name"], m["entry"]["location"]): m["previous_command"]
+            for m in diff_result["modified"]
+        }
+        for result in results:
+            key = (result["source"], result["name"], result["location"])
+            if key in modified_lookup:
+                add_reason(result, 3, f"Changed since last baseline (was: {modified_lookup[key]})")
+        results.sort(key=lambda r: r["score"], reverse=True)
+
+        # Living-off-the-land detection: a NEW autostart registration
+        # pointing at an OLD, pre-existing binary is a real, specific
+        # attack pattern (reusing a trusted system binary like svchost.exe
+        # or certutil.exe instead of dropping new malware) that neither
+        # "new" nor "recently created" catches alone -- a normal software
+        # install makes both true together, this makes only one true.
+        KNOWN_VOLATILE_SERVICE_PREFIXES = (
+            "cbdhsvc_", "CDPUserSvc_", "webthreatdefusersvc_", "WpnUserService_",
+        )
+        for entry_dict in diff_result["new"]:
+            if entry_dict["source"] == "Windows Service" and any(
+                entry_dict["name"].startswith(p) for p in KNOWN_VOLATILE_SERVICE_PREFIXES
+            ):
+                continue  # known, routine Windows per-user service churn
+
+            exe_path = risk.extract_exe_path(entry_dict["command"])
+            if not exe_path or not os.path.exists(exe_path):
+                continue  # no real file to check (e.g. a COM-handler task) -- no evidence either way
+
+            try:
+                created = datetime.fromtimestamp(os.path.getctime(exe_path))
+            except OSError:
+                continue
+
+            is_old_binary = created < datetime.now() - timedelta(days=risk.RECENT_DAYS_THRESHOLD)
+            if is_old_binary:
+                key = (entry_dict["source"], entry_dict["name"], entry_dict["location"])
+                for result in results:
+                    if (result["source"], result["name"], result["location"]) == key:
+                        add_reason(result, 3, f"Changed since last baseline (was: {modified_lookup[key]})")
+                        break
+
+        results.sort(key=lambda r: r["score"], reverse=True)
 
     return {
         "total_entries": len(results),

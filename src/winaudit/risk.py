@@ -5,7 +5,7 @@ from .scanners import AutostartEntry
 
 SUSPICIOUS_PATH_FRAGMENTS = ["\\temp\\", "\\appdata\\local\\temp\\", "\\downloads\\"]
 RECENT_DAYS_THRESHOLD = 30
-
+NO_FLAGS_REASON = "No red flags — looks like a normal autostart entry"
 
 @dataclass
 class RiskAssessment:
@@ -19,35 +19,43 @@ def assess(entry: AutostartEntry, signature_checker=None) -> RiskAssessment:
     reasons = []
 
     command_lower = entry.command.lower()
+    exe_path = extract_exe_path(entry.command)
+    exe_exists = bool(exe_path and os.path.exists(exe_path))
 
     if any(frag in command_lower for frag in SUSPICIOUS_PATH_FRAGMENTS):
         score += 2
         reasons.append("Runs from a Temp/Downloads-style folder, not a standard install location")
 
-    if entry.created and entry.created > datetime.now() - timedelta(days=RECENT_DAYS_THRESHOLD):
-        score += 1
-        reasons.append(f"Created recently ({entry.created.date()})")
+    # Prefer whatever the scanner already told us (e.g. Startup Folder
+    # items carry their own creation time); otherwise fall back to the
+    # actual executable's file creation date, so this check works for
+    # EVERY scanner, not just the one that happens to populate `created`
+    # directly. Deliberately NOT "when did this registry/service entry
+    # appear" -- that's volatile for things like per-user services, which
+    # get recreated with a new random name constantly. A file's own
+    # creation date on disk is far more stable and meaningful.
+    created = entry.created
+    if created is None and exe_exists:
+        try:
+            created = datetime.fromtimestamp(os.path.getctime(exe_path))
+        except OSError:
+            created = None
 
-    if entry.source == "Winlogon Helper Key" and entry.extra.get("matches_default") is False:
-        score += 3
-        reasons.append(
-            f"Modified from Windows' expected default for '{entry.name}' — "
-            "this is a well-documented persistence technique"
-        )
+    if created and created > datetime.now() - timedelta(days=RECENT_DAYS_THRESHOLD):
+        score += 1
+        reasons.append(f"Executable created recently ({created.date()})")
 
     is_store_app = "\\windowsapps\\" in command_lower
 
     if is_store_app:
         reasons.append("Installed via Microsoft Store (WindowsApps) — signature not independently checkable this way, treated as trusted location")
-    elif signature_checker is not None:
-        exe_path = extract_exe_path(entry.command)
-        if exe_path and os.path.exists(exe_path):
-            if not signature_checker(exe_path):
-                score += 2
-                reasons.append("Executable is not digitally signed")
+    elif signature_checker is not None and exe_exists:
+        if not signature_checker(exe_path):
+            score += 2
+            reasons.append("Executable is not digitally signed")
 
     if not reasons:
-        reasons.append("No red flags — looks like a normal autostart entry")
+        reasons.append(NO_FLAGS_REASON)
 
     return RiskAssessment(entry=entry, score=score, reasons=reasons)
 

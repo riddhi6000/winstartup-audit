@@ -139,6 +139,7 @@
         <th>Name</th>
         <th>Command / Path</th>
         <th>Reasons</th>
+        <th>VirusTotal</th>
       </tr>
     </thead>
     <tbody id="resultsBody"></tbody>
@@ -164,6 +165,16 @@
       const div = document.createElement('div');
       div.textContent = str;
       return div.innerHTML;
+    }
+
+    function formatVirusTotal(vt) {
+      if (!vt) return '<span style="color:#666">—</span>';
+      if (vt.error) return `<span style="color:#888">check failed</span>`;
+      if (!vt.found) return '<span style="color:#888">not in VT database</span>';
+      const color = vt.malicious_count === 0 ? '#4ade80'
+        : vt.malicious_count / vt.total_engines >= 0.3 ? '#f87171'
+        : '#fbbf24';
+      return `<span style="color:${color}">${vt.malicious_count}/${vt.total_engines} flagged</span>`;
     }
 
     async function runScan() {
@@ -228,6 +239,7 @@
                 ${previousCommand !== undefined ? `<br><span style="color:#888">was: ${escapeHtml(previousCommand)}</span>` : ''}
             </td>
             <td class="reasons">${escapeHtml(entry.reasons.join('; '))}</td>
+            <td>${formatVirusTotal(entry.virustotal)}</td>
           `;
           tbody.appendChild(row);
         }
