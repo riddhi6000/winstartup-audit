@@ -105,6 +105,9 @@ def check_signature(exe_path: str, timeout: int = 15) -> dict:
     except (json.JSONDecodeError, TypeError):
         return _inconclusive("InvalidOutput")
 
+    if not isinstance(payload, dict):
+        return _inconclusive("InvalidOutput")
+    
     status = payload.get("status")
     subject = payload.get("subject", "")
     status_message = payload.get("status_message", "")
