@@ -1,21 +1,19 @@
+@"
 # Python
 __pycache__/
 *.pyc
 venv/
 .venv/
+.pytest_cache/
 
-# VS Code
+# Editors
 .vscode/
-
-# Project output
-sample_output/*.json
-!sample_output/example_report.json
-
-# Baseline scan data (machine-specific, not source code)
-baseline.json
 
 # Secrets
 .env
 
-# Local hash cache
+# Machine-specific data (usernames, SIDs, local paths)
+baseline.json
 hash_cache.db
+scan-*.json
+"@ | Set-Content -Encoding ascii .gitignore
