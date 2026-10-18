@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <title>Windows Startup Audit</title>
+  <meta name="winaudit-token" content="__WINAUDIT_TOKEN__">
   <style>
     * { box-sizing: border-box; }
     body {
@@ -203,7 +204,7 @@
   </table>
   </div>
 
-  <script>
+  <script nonce="__CSP_NONCE__">
     const btn = document.getElementById('scanBtn');
     const summary = document.getElementById('summary');
     const table = document.getElementById('resultsTable');
@@ -212,6 +213,22 @@
     const baselineInfo = document.getElementById('baselineInfo');
     const removedSection = document.getElementById('removedSection');
     const removedList = document.getElementById('removedList');
+    const apiToken = document.querySelector('meta[name="winaudit-token"]').content;
+
+    async function apiFetch(url, options = {}) {
+      const response = await fetch(url, {
+        ...options,
+        headers: { ...(options.headers || {}), 'X-WinAudit-Token': apiToken },
+      });
+      if (response.status === 403) {
+        throw new Error('Session expired or rejected — reload this page and try again');
+      }
+      if (response.status === 409) {
+        throw new Error('A scan is already running — wait for it to finish');
+      }
+      if (!response.ok) throw new Error(`Server returned ${response.status}`);
+      return response.json();
+    }
 
     function scoreClass(score) {
       if (score === 0) return 'score-0';
@@ -243,9 +260,7 @@
       tbody.innerHTML = '';
 
       try {
-        const response = await fetch('/api/scan');
-        if (!response.ok) throw new Error(`Server returned ${response.status}`);
-        const data = await response.json();
+        const data = await apiFetch('/api/scan');
 
         summary.textContent =
           `${data.total_entries} autostart entries found — ${data.flagged_count} flagged for review.`;
@@ -265,6 +280,8 @@
           } else {
             removedSection.style.display = 'none';
           }
+        } else if (data.baseline_error) {
+          baselineInfo.textContent = `Baseline could not be used: ${data.baseline_error}`;
         } else {
           baselineInfo.textContent = 'No baseline saved yet — click "Save Current State as Baseline" to start tracking changes over time.';
         }
@@ -317,8 +334,7 @@
       saveBaselineBtn.disabled = true;
       saveBaselineBtn.textContent = 'Saving...';
       try {
-        const response = await fetch('/api/baseline/save', { method: 'POST' });
-        const data = await response.json();
+        const data = await apiFetch('/api/baseline/save', { method: 'POST' });
         baselineInfo.textContent = `Baseline saved — ${data.entry_count} entries recorded.`;
       } catch (err) {
         baselineInfo.textContent = `Failed to save baseline: ${err.message}`;
