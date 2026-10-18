@@ -1,35 +1,130 @@
+
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
 
+REQUIRED_ENTRY_FIELDS = ("source", "name", "location", "command")
+
+
+def _validate_entries(entries: list[dict]) -> None:
+    """Validate entries and reject duplicate identities."""
+    if not isinstance(entries, list):
+        raise ValueError("Baseline entries must be a list.")
+
+    seen_keys = set()
+
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"Entry at index {index} must be a JSON object."
+            )
+
+        for field in REQUIRED_ENTRY_FIELDS:
+            if not isinstance(entry.get(field), str):
+                raise ValueError(
+                    f"Entry at index {index} must contain "
+                    f"'{field}' as a string."
+                )
+
+        key = entry_key(entry)
+
+        if key in seen_keys:
+            raise ValueError(
+                f"Duplicate baseline entry identity at index {index}: "
+                f"{key}"
+            )
+
+        seen_keys.add(key)
+
+
 def entry_key(entry: dict) -> tuple:
-    """What makes two entries 'the same' across two different scans --
-    source + name + location together identify a specific autostart entry,
-    even if the command it runs changes between scans."""
+    """Identify an entry by source, name and location."""
+    if not isinstance(entry, dict):
+        raise ValueError("Entry must be a JSON object.")
+
+    for field in ("source", "name", "location"):
+        if not isinstance(entry.get(field), str):
+            raise ValueError(
+                f"Entry field '{field}' must be a string."
+            )
+
     return (entry["source"], entry["name"], entry["location"])
 
 
 def save_baseline(entries: list[dict], path: Path) -> None:
+    """Validate and atomically save a baseline JSON file."""
+    _validate_entries(entries)
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
     data = {
         "saved_at": datetime.now().isoformat(),
         "entries": entries,
     }
-    path.write_text(json.dumps(data, indent=2))
+
+    temp_path = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            json.dump(data, temp_file, indent=2)
+            temp_file.write("\n")
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+
+        # The temporary file is in the same directory, allowing
+        # an atomic replacement on the same filesystem.
+        os.replace(temp_path, path)
+
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
 
 
 def load_baseline(path: Path) -> dict | None:
+    """Load and validate a baseline, or return None if it is absent."""
+    path = Path(path)
+
     if not path.exists():
         return None
-    return json.loads(path.read_text())
+
+    try:
+        with path.open("r", encoding="utf-8-sig") as baseline_file:
+            data = json.load(baseline_file)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError("Baseline file contains invalid JSON.") from exc
+
+    if not isinstance(data, dict):
+        raise ValueError("Baseline must be a JSON object.")
+
+    if not isinstance(data.get("saved_at"), str):
+        raise ValueError("Baseline must contain 'saved_at' as a string.")
+
+    if not isinstance(data.get("entries"), list):
+        raise ValueError("Baseline must contain an 'entries' list.")
+
+    _validate_entries(data["entries"])
+
+    return data
 
 
 def diff(current_entries: list[dict], baseline_entries: list[dict]) -> dict:
-    """Compares a fresh scan against a saved baseline. Returns which
-    entries are brand new since the baseline, which have disappeared, and
-    which are present in both but now run a different command -- e.g. a
-    trusted entry's path was quietly changed, which is exactly the
-    Winlogon-style tampering pattern we built detection for earlier."""
+    """Compare current entries against a saved baseline."""
+    _validate_entries(current_entries)
+    _validate_entries(baseline_entries)
+
     baseline_by_key = {entry_key(e): e for e in baseline_entries}
     current_by_key = {entry_key(e): e for e in current_entries}
 
@@ -38,11 +133,15 @@ def diff(current_entries: list[dict], baseline_entries: list[dict]) -> dict:
     shared_keys = current_by_key.keys() & baseline_by_key.keys()
 
     modified = []
+
     for key in shared_keys:
-        if current_by_key[key]["command"] != baseline_by_key[key]["command"]:
+        current_entry = current_by_key[key]
+        baseline_entry = baseline_by_key[key]
+
+        if current_entry["command"] != baseline_entry["command"]:
             modified.append({
-                "entry": current_by_key[key],
-                "previous_command": baseline_by_key[key]["command"],
+                "entry": current_entry,
+                "previous_command": baseline_entry["command"],
             })
 
     return {
