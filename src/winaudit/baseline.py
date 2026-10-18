@@ -1,10 +1,9 @@
-
 import json
 import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
-
+import re
 
 REQUIRED_ENTRY_FIELDS = ("source", "name", "location", "command")
 
@@ -53,6 +52,33 @@ def entry_key(entry: dict) -> tuple:
 
     return (entry["source"], entry["name"], entry["location"])
 
+
+def _normalize_command_for_comparison(command: str) -> str:
+    """Normalize version folders for selected known software paths."""
+    known_versioned_paths = (
+        "\\Microsoft\\Edge\\Application\\",
+        "\\Microsoft\\EdgeWebView\\Application\\",
+        "\\Microsoft\\Windows Defender\\Platform\\",
+        "\\Microsoft\\OneDrive\\",
+        "\\Google\\GoogleUpdater\\",
+    )
+
+    normalized = command
+
+    for prefix in known_versioned_paths:
+        pattern = (
+            re.escape(prefix)
+            + r"\d+(?:\.\d+){1,4}(?:-\d+)?(?=\\)"
+        )
+
+        normalized = re.sub(
+            pattern,
+            lambda match: prefix + "<VERSION>",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+
+    return normalized
 
 def save_baseline(entries: list[dict], path: Path) -> None:
     """Validate and atomically save a baseline JSON file."""
@@ -119,7 +145,6 @@ def load_baseline(path: Path) -> dict | None:
 
     return data
 
-
 def diff(current_entries: list[dict], baseline_entries: list[dict]) -> dict:
     """Compare current entries against a saved baseline."""
     _validate_entries(current_entries)
@@ -138,7 +163,14 @@ def diff(current_entries: list[dict], baseline_entries: list[dict]) -> dict:
         current_entry = current_by_key[key]
         baseline_entry = baseline_by_key[key]
 
-        if current_entry["command"] != baseline_entry["command"]:
+        current_command = _normalize_command_for_comparison(
+            current_entry["command"]
+        )
+        baseline_command = _normalize_command_for_comparison(
+            baseline_entry["command"]
+        )
+
+        if current_command != baseline_command:
             modified.append({
                 "entry": current_entry,
                 "previous_command": baseline_entry["command"],

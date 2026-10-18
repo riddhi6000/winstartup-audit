@@ -76,3 +76,74 @@ def test_api_reports_missing_winlogon_value(monkeypatch):
     assert finding["score"] == 4
     assert "Winlogon value 'Userinit' is missing" in finding["reasons"]
     assert response["flagged_count"] == 1
+
+def test_new_edge_entry_does_not_get_lolbin_penalty(monkeypatch):
+    entry = AutostartEntry(
+        source="Registry Run Key",
+        name="MicrosoftEdgeAutoLaunch_test",
+        command=(
+            '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" '
+            "--win-session-start"
+        ),
+        location=r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+        scope="current user",
+        created=datetime.now() - timedelta(days=90),
+        extra={},
+    )
+
+    setup_api_scan(monkeypatch, entry)
+    monkeypatch.setattr(
+        api,
+        "load_baseline",
+        lambda path: {"saved_at": "test", "entries": []},
+    )
+
+    response = api.run_scan()
+    finding = response["entries"][0]
+
+    assert not any(
+        "dual-use utility" in reason for reason in finding["reasons"]
+    )
+
+
+def test_new_encoded_powershell_entry_gets_lolbin_penalty(monkeypatch):
+    entry = AutostartEntry(
+        source="Registry Run Key",
+        name="SuspiciousPowerShell",
+        command=(
+            '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" '
+            "-EncodedCommand VGVzdA=="
+        ),
+        location=r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+        scope="current user",
+        created=datetime.now() - timedelta(days=90),
+        extra={},
+    )
+
+    setup_api_scan(monkeypatch, entry)
+    monkeypatch.setattr(
+        api,
+        "load_baseline",
+        lambda path: {"saved_at": "test", "entries": []},
+    )
+
+    response = api.run_scan()
+    finding = response["entries"][0]
+
+    assert any(
+        "dual-use utility" in reason for reason in finding["reasons"]
+    )
+    assert finding["score"] >= 4
+
+def test_lolbin_helper_requires_suspicious_arguments():
+    assert api.has_suspicious_lolbin_command(
+        r'"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -EncodedCommand VGVzdA=='
+    )
+
+    assert not api.has_suspicious_lolbin_command(
+        r'"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --win-session-start'
+    )
+
+    assert not api.has_suspicious_lolbin_command(
+        r'"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -File "C:\Scripts\maintenance.ps1"'
+    )

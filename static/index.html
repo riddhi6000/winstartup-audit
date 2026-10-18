@@ -4,12 +4,15 @@
   <meta charset="UTF-8">
   <title>Windows Startup Audit</title>
   <style>
+    * { box-sizing: border-box; }
     body {
       font-family: -apple-system, Segoe UI, Arial, sans-serif;
       background: #1e1e1e;
       color: #e0e0e0;
       margin: 0;
-      padding: 2rem;
+      padding: clamp(0.75rem, 1.5vw, 1.5rem);
+      max-width: 100%;
+      overflow-x: hidden;
     }
     h1 {
       font-size: 1.5rem;
@@ -17,7 +20,15 @@
     }
     #summary {
       color: #9a9a9a;
-      margin-bottom: 1.5rem;
+      margin-bottom: 1rem;
+      line-height: 1.45;
+    }
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
     }
     #scanBtn {
       background: #0e7490;
@@ -27,7 +38,7 @@
       border-radius: 4px;
       font-size: 1rem;
       cursor: pointer;
-      margin-bottom: 1.5rem;
+      margin-bottom: 0;
     }
     #scanBtn:disabled, #saveBaselineBtn:disabled {
       background: #555;
@@ -41,8 +52,8 @@
       border-radius: 4px;
       font-size: 1rem;
       cursor: pointer;
-      margin-bottom: 1.5rem;
-      margin-left: 0.5rem;
+      margin-bottom: 0;
+      margin-left: 0;
     }
     #baselineInfo {
       color: #9a9a9a;
@@ -83,53 +94,99 @@
       border-radius: 3px;
       margin-right: 0.4rem;
     }
+    .table-wrap {
+      width: 100%;
+      max-width: 100%;
+      overflow-x: auto;
+      border-top: 1px solid #333;
+      scrollbar-width: thin;
+      scrollbar-color: #555 #1e1e1e;
+    }
     table {
       width: 100%;
+      table-layout: fixed;
       border-collapse: collapse;
-      font-size: 0.85rem;
+      font-size: 0.78rem;
     }
+    #resultsTable th:nth-child(1), #resultsTable td:nth-child(1) { width: 4%; }
+    #resultsTable th:nth-child(2), #resultsTable td:nth-child(2) { width: 9%; }
+    #resultsTable th:nth-child(3), #resultsTable td:nth-child(3) { width: 10%; }
+    #resultsTable th:nth-child(4), #resultsTable td:nth-child(4) { width: 17%; }
+    #resultsTable th:nth-child(5), #resultsTable td:nth-child(5) { width: 24%; }
+    #resultsTable th:nth-child(6), #resultsTable td:nth-child(6) { width: 27%; }
+    #resultsTable th:nth-child(7), #resultsTable td:nth-child(7) { width: 9%; }
     th, td {
       text-align: left;
-      padding: 0.5rem 0.75rem;
+      padding: 0.55rem 0.5rem;
       border-bottom: 1px solid #333;
       vertical-align: top;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: normal;
     }
     th {
       color: #9a9a9a;
       font-weight: 600;
       text-transform: uppercase;
-      font-size: 0.75rem;
+      font-size: 0.7rem;
+      letter-spacing: 0.02em;
     }
     .score-cell {
       font-weight: bold;
       text-align: center;
-      width: 3rem;
+      white-space: nowrap;
     }
     .score-0 { color: #4ade80; }
     .score-low { color: #fbbf24; }
     .score-high { color: #f87171; }
     .command {
-      font-family: Consolas, monospace;
-      font-size: 0.8rem;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.72rem;
       color: #b0b0b0;
-      word-break: break-all;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      white-space: normal;
     }
     .reasons {
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       color: #c0c0c0;
+      overflow-wrap: anywhere;
+    }
+    #resultsTable tbody tr:hover { filter: brightness(1.12); }
+    #removedSection { max-width: 100%; overflow-wrap: anywhere; }
+    #removedList li { margin-bottom: 0.35rem; overflow-wrap: anywhere; }
+    @media (max-width: 1000px) {
+      body { padding: 0.75rem; }
+      table { font-size: 0.72rem; }
+      th, td { padding: 0.45rem 0.35rem; }
+      #resultsTable th:nth-child(3), #resultsTable td:nth-child(3) { width: 11%; }
+      #resultsTable th:nth-child(4), #resultsTable td:nth-child(4) { width: 16%; }
+      #resultsTable th:nth-child(5), #resultsTable td:nth-child(5) { width: 23%; }
+      #resultsTable th:nth-child(6), #resultsTable td:nth-child(6) { width: 29%; }
+      #resultsTable th:nth-child(7), #resultsTable td:nth-child(7) { width: 10%; }
+    }
+    @media (max-width: 650px) {
+      h1 { font-size: 1.25rem; }
+      .button-row { align-items: stretch; }
+      #scanBtn, #saveBaselineBtn { width: 100%; }
+      #resultsTable { min-width: 760px; }
+      .table-wrap { border-bottom: 1px solid #333; }
     }
   </style>
 </head>
 <body>
   <h1>Windows Startup Audit</h1>
   <div id="summary">Click "Run Scan" to audit this machine's autostart locations.</div>
-  <button id="scanBtn">Run Scan</button>
-  <button id="saveBaselineBtn">Save Current State as Baseline</button>
+  <div class="button-row">
+    <button id="scanBtn">Run Scan</button>
+    <button id="saveBaselineBtn">Save Current State as Baseline</button>
+  </div>
   <div id="baselineInfo"></div>
   <div id="removedSection">
     <h2>Removed since baseline</h2>
     <ul id="removedList"></ul>
   </div>
+  <div class="table-wrap">
   <table id="resultsTable" style="display:none">
     <thead>
       <tr>
@@ -144,6 +201,7 @@
     </thead>
     <tbody id="resultsBody"></tbody>
   </table>
+  </div>
 
   <script>
     const btn = document.getElementById('scanBtn');

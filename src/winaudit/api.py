@@ -25,6 +25,59 @@ BASELINE_PATH = PROJECT_ROOT / "baseline.json"
 SCANNERS = [registry_run, startup_folder, scheduled_tasks, services, winlogon]
 
 
+# Dual-use utilities that can be abused to execute code or scripts.
+# Their presence alone is NOT suspicious; command arguments matter.
+SUSPICIOUS_LOLBIN_NAMES = {
+    "powershell.exe",
+    "pwsh.exe",
+    "cmd.exe",
+    "mshta.exe",
+    "wscript.exe",
+    "cscript.exe",
+    "rundll32.exe",
+    "regsvr32.exe",
+    "certutil.exe",
+    "bitsadmin.exe",
+    "msbuild.exe",
+    "installutil.exe",
+}
+
+SUSPICIOUS_COMMAND_MARKERS = (
+    "-encodedcommand",
+    " -enc ",
+    "downloadstring",
+    "downloadfile",
+    "invoke-expression",
+    "invoke-webrequest",
+    "frombase64string",
+    "javascript:",
+    "vbscript:",
+    "scrobj.dll",
+    " -windowstyle hidden",
+    " -w hidden",
+    " -executionpolicy bypass",
+    " -ep bypass",
+)
+
+
+def has_suspicious_lolbin_command(command: str) -> bool:
+    """Flag known dual-use utilities only when arguments are suspicious."""
+    if not isinstance(command, str) or not command.strip():
+        return False
+
+    exe_path = risk.extract_exe_path(command)
+    if not exe_path:
+        return False
+
+    executable_name = os.path.basename(exe_path).lower()
+    if executable_name not in SUSPICIOUS_LOLBIN_NAMES:
+        return False
+
+    command_lower = command.lower()
+    return any(marker in command_lower for marker in SUSPICIOUS_COMMAND_MARKERS)
+
+
+
 @app.get("/")
 def serve_dashboard():
     return FileResponse(STATIC_DIR / "index.html")
@@ -169,45 +222,38 @@ def run_scan():
                 add_reason(result, 3, f"Changed since last baseline (was: {modified_lookup[key]})")
         results.sort(key=lambda r: r["score"], reverse=True)
 
-        # Living-off-the-land detection: a NEW autostart registration
-        # pointing at an OLD, pre-existing binary is a real, specific
-        # attack pattern (reusing a trusted system binary like svchost.exe
-        # or certutil.exe instead of dropping new malware) that neither
-        # "new" nor "recently created" catches alone -- a normal software
-        # install makes both true together, this makes only one true.
-        KNOWN_VOLATILE_SERVICE_PREFIXES = (
-            "cbdhsvc_", "CDPUserSvc_", "webthreatdefusersvc_", "WpnUserService_",
-        )
+        # Only add the living-off-the-land penalty when a new
+        # registration uses a known dual-use utility with suspicious
+        # command arguments. A new entry pointing to an old executable
+        # is not enough on its own.
         for entry_dict in diff_result["new"]:
-            if entry_dict["source"] == "Windows Service" and any(
-                entry_dict["name"].startswith(p) for p in KNOWN_VOLATILE_SERVICE_PREFIXES
-            ):
-                continue  # known, routine Windows per-user service churn
-
-            exe_path = risk.extract_exe_path(entry_dict["command"])
-            if not exe_path or not os.path.exists(exe_path):
-                continue  # no real file to check (e.g. a COM-handler task) -- no evidence either way
-
-            try:
-                created = datetime.fromtimestamp(os.path.getctime(exe_path))
-            except OSError:
+            if not has_suspicious_lolbin_command(entry_dict["command"]):
                 continue
 
-            is_old_binary = created < datetime.now() - timedelta(days=risk.RECENT_DAYS_THRESHOLD)
-            if is_old_binary:
-                key = (entry_dict["source"], entry_dict["name"], entry_dict["location"])
-                for result in results:
-                    if (result["source"], result["name"], result["location"]) == key:
-                        add_reason(
-                            result,
-                            4,
-                            "New autostart entry, but the executable itself is not new — "
-                            "possible reuse of an existing trusted binary "
-                            "(living-off-the-land pattern)",
-                        )
-                        break
+            key = (
+                entry_dict["source"],
+                entry_dict["name"],
+                entry_dict["location"],
+            )
+
+            for result in results:
+                result_key = (
+                    result["source"],
+                    result["name"],
+                    result["location"],
+                )
+
+                if result_key == key:
+                    add_reason(
+                        result,
+                        4,
+                        "New autostart entry uses a dual-use utility "
+                        "with suspicious command arguments",
+                    )
+                    break
 
         results.sort(key=lambda r: r["score"], reverse=True)
+
 
     return {
         "total_entries": len(results),
