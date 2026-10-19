@@ -12,13 +12,14 @@ from winaudit import api
 
 TOKEN = "test-token"
 HEADERS = {"X-WinAudit-Token": TOKEN}
+EMPTY_COVERAGE = {"complete": True, "scanners": [], "entries": {}}
 
 
 @pytest.fixture
 def client(monkeypatch):
     saved = []
     monkeypatch.setattr(api, "API_TOKEN", TOKEN)
-    monkeypatch.setattr(api, "perform_scan", lambda: [])
+    monkeypatch.setattr(api, "perform_scan", lambda: ([], EMPTY_COVERAGE))
     monkeypatch.setattr(api, "load_baseline", lambda path: None)
     monkeypatch.setattr(api, "save_baseline", lambda entries, path: saved.append(path))
 

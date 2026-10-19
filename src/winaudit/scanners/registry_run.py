@@ -1,5 +1,11 @@
 import winreg
-from . import AutostartEntry
+from . import AutostartEntry, ScanReport
+
+SOURCE = "Registry Run Key"
+
+# EnumValue reports "no more values" by raising OSError with this Windows
+# error code (ERROR_NO_MORE_ITEMS). Any OTHER OSError is a genuine failure.
+ERROR_NO_MORE_ITEMS = 259
 
 # (hive, subkey, human-readable scope)
 RUN_KEY_LOCATIONS = [
@@ -12,28 +18,68 @@ RUN_KEY_LOCATIONS = [
 ]
 
 
-def scan() -> list[AutostartEntry]:
-    entries = []
+def scan() -> ScanReport:
+    report = ScanReport(scanner=SOURCE, locations_total=len(RUN_KEY_LOCATIONS))
+
     for hive, subkey, scope in RUN_KEY_LOCATIONS:
+        location = f"{_hive_name(hive)}\\{subkey}"
+
         try:
-            with winreg.OpenKey(hive, subkey) as key:
-                i = 0
-                while True:
-                    try:
-                        name, command, _ = winreg.EnumValue(key, i)
-                        entries.append(AutostartEntry(
-                            source="Registry Run Key",
-                            name=name,
-                            command=command,
-                            location=f"{_hive_name(hive)}\\{subkey}",
-                            scope=scope,
-                        ))
-                        i += 1
-                    except OSError:
-                        break  # no more values in this key
+            key = winreg.OpenKey(hive, subkey)
         except FileNotFoundError:
-            continue  # this key doesn't exist on this machine — fine
-    return entries
+            # An absent key just means nothing is configured there.
+            report.locations_checked += 1
+            continue
+        except OSError as exc:
+            # Access denied and similar: we could not look, which is NOT
+            # the same as "nothing there", so it is reported.
+            report.errors.append(f"{location}: could not be opened ({_describe(exc)})")
+            continue
+
+        with key:
+            location_complete = True
+            index = 0
+
+            # Registry values can only be read one index at a time; the end
+            # of the list is signalled by an exception, so the loop runs
+            # until that specific exception arrives.
+            while True:
+                try:
+                    name, command, _ = winreg.EnumValue(key, index)
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) != ERROR_NO_MORE_ITEMS:
+                        report.errors.append(
+                            f"{location}: reading stopped early ({_describe(exc)})"
+                        )
+                        location_complete = False
+                    break
+
+                index += 1
+
+                if not isinstance(command, str):
+                    report.errors.append(
+                        f"{location}: value '{name}' is not text "
+                        f"(type {type(command).__name__}) and was skipped"
+                    )
+                    location_complete = False
+                    continue
+
+                report.entries.append(AutostartEntry(
+                    source=SOURCE,
+                    name=name,
+                    command=command,
+                    location=location,
+                    scope=scope,
+                ))
+
+            if location_complete:
+                report.locations_checked += 1
+
+    return report
+
+
+def _describe(exc: OSError) -> str:
+    return exc.strerror or str(exc)
 
 
 def _hive_name(hive) -> str:

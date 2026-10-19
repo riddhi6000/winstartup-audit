@@ -10,8 +10,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
-from .scanners import registry_run, startup_folder, scheduled_tasks, services, winlogon
-from . import risk, signature, virustotal
+from .scanners import registry_run, startup_folder, scheduled_tasks, services, winlogon, ScanReport
+from . import coverage, risk, signature, virustotal
 from .baseline import save_baseline, load_baseline, diff as diff_entries
 from datetime import datetime, timedelta
 
@@ -140,7 +140,7 @@ def _exclusive_scan():
         _scan_lock.release()
 
 
-def _perform_scan_exclusively() -> list[dict]:
+def _perform_scan_exclusively() -> tuple[list[dict], dict]:
     with _exclusive_scan():
         try:
             return perform_scan()
@@ -182,21 +182,41 @@ def add_reason(result: dict, points: int, reason: str) -> None:
     result["score"] += points
     result["reasons"].append(reason)
 
-def perform_scan() -> list[dict]:
+
+def _run_scanner(scanner) -> ScanReport:
+    """Runs one scanner so that a crash inside it costs only that scanner's
+    results, and is reported as a failure instead of aborting the scan."""
+    try:
+        return scanner.scan()
+    except Exception:
+        name = getattr(scanner, "__name__", "scanner").rsplit(".", 1)[-1]
+        logger.exception("Scanner %s crashed", name)
+        return ScanReport(
+            scanner=name,
+            failed=True,
+            errors=["Unexpected error; see the server console for details."],
+        )
+
+
+def perform_scan() -> tuple[list[dict], dict]:
     """Runs all five scanners and risk-assesses every entry. This is the
     one shared implementation behind both /api/scan and
     /api/baseline/save, so there's exactly one place that defines 'what a
     scan actually is' -- the two endpoints just do different things with
-    the same result."""
-    all_entries = []
-    for scanner in SCANNERS:
-        all_entries.extend(scanner.scan())
+    the same result.
 
-    exe_paths = set()
-    for entry in all_entries:
-        path = risk.extract_exe_path(entry.command)
-        if path and os.path.exists(path):
-            exe_paths.add(path)
+    Returns the assessed entries together with a coverage summary that
+    says how much of the machine the scan actually managed to look at."""
+    reports = [_run_scanner(scanner) for scanner in SCANNERS]
+    all_entries = [entry for report in reports for entry in report.entries]
+
+    # Resolved once, so the signature check, the scoring, VirusTotal and the
+    # coverage numbers all agree about which file each entry runs.
+    resolved_entries = [risk.resolve_executable(entry.command) for entry in all_entries]
+
+    exe_paths = {
+        resolved.path for resolved in resolved_entries if resolved.state == "found"
+    }
 
     signature_results = signature.batch_check(list(exe_paths))
 
@@ -212,9 +232,9 @@ def perform_scan() -> list[dict]:
         )
 
     results = []
-    for entry in all_entries:
+    for entry, resolved in zip(all_entries, resolved_entries):
         assessment = risk.assess(entry, signature_checker=sig_checker)
-        exe_path = risk.extract_exe_path(entry.command)
+        exe_path = resolved.path if resolved.state == "found" else None
         publisher = signature_results.get(exe_path, {}).get("publisher") if exe_path else None
 
         results.append({
@@ -224,6 +244,7 @@ def perform_scan() -> list[dict]:
             "location": entry.location,
             "scope": entry.scope,
             "created": entry.created.isoformat() if entry.created else None,
+            "executable_path": exe_path,
             "score": assessment.score,
             "reasons": assessment.reasons,
             "publisher": publisher,
@@ -248,8 +269,8 @@ def perform_scan() -> list[dict]:
     for result in results:
         if result["score"] == 0:
             continue
-        exe_path = risk.extract_exe_path(result["command"])
-        if not exe_path or not os.path.exists(exe_path):
+        exe_path = result["executable_path"]
+        if not exe_path:
             continue
         vt_result = virustotal.check_file(exe_path)
         result["virustotal"] = vt_result
@@ -285,13 +306,18 @@ def perform_scan() -> list[dict]:
                     "this file as suspicious",
                 )
 
+    # Recorded last, once VirusTotal has run, so each entry states which of
+    # its checks actually happened.
+    for result, resolved in zip(results, resolved_entries):
+        result["checks"] = coverage.classify_result(result, resolved.state)
+
     results.sort(key=lambda r: r["score"], reverse=True)
-    return results
+    return results, coverage.build_coverage(reports, results)
 
 
 @app.get("/api/scan", dependencies=[Depends(require_local_client)])
 def run_scan():
-    results = _perform_scan_exclusively()
+    results, coverage_summary = _perform_scan_exclusively()
 
     baseline_error = None
     try:
@@ -301,10 +327,23 @@ def run_scan():
         baseline_data = None
         baseline_error = str(exc)
 
+    # If a scanner failed, its entries are missing from this scan. Comparing
+    # anyway would report every one of them as "removed", so that source is
+    # left out of the comparison and the dashboard is told why.
+    skipped_sources = [
+        scanner["scanner"]
+        for scanner in coverage_summary["scanners"]
+        if scanner["status"] == "failed"
+    ]
+
     diff_result = None
     if baseline_data is not None:
         try:
-            diff_result = diff_entries(results, baseline_data["entries"])
+            comparable_baseline = [
+                entry for entry in baseline_data["entries"]
+                if entry["source"] not in skipped_sources
+            ]
+            diff_result = diff_entries(results, comparable_baseline)
         except ValueError as exc:
             logger.warning("Baseline comparison failed: %s", exc)
             baseline_data = None
@@ -361,15 +400,34 @@ def run_scan():
         "total_entries": len(results),
         "flagged_count": sum(1 for r in results if r["score"] > 0),
         "entries": results,
+        "coverage": coverage_summary,
         "baseline_saved_at": baseline_data["saved_at"] if baseline_data else None,
         "baseline_error": baseline_error,
+        "diff_skipped_sources": skipped_sources if diff_result is not None else [],
         "diff": diff_result,
     }
 
 
 @app.post("/api/baseline/save", dependencies=[Depends(require_local_client)])
 def save_current_as_baseline():
-    results = _perform_scan_exclusively()
+    results, coverage_summary = _perform_scan_exclusively()
+
+    failed = [
+        scanner["scanner"]
+        for scanner in coverage_summary["scanners"]
+        if scanner["status"] == "failed"
+    ]
+    if failed:
+        # A baseline built from an incomplete scan would later report the
+        # missing entries as "new", so it is refused rather than saved.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Baseline not saved: these scanners failed: "
+                f"{', '.join(failed)}. See the coverage details on the dashboard."
+            ),
+        )
+
     try:
         save_baseline(results, BASELINE_PATH)
     except (ValueError, OSError):
@@ -378,4 +436,14 @@ def save_current_as_baseline():
             status_code=500,
             detail="Baseline could not be saved. Check the server console for details.",
         ) from None
-    return {"saved": True, "entry_count": len(results)}
+
+    incomplete = [
+        scanner["scanner"]
+        for scanner in coverage_summary["scanners"]
+        if scanner["status"] != "complete"
+    ]
+    return {
+        "saved": True,
+        "entry_count": len(results),
+        "incomplete_scanners": incomplete,
+    }

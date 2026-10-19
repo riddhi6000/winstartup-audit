@@ -45,7 +45,7 @@ def test_scan_reports_default_shell(monkeypatch):
         },
     )
 
-    entries = winlogon.scan()
+    entries = winlogon.scan().entries
     shell = next(entry for entry in entries if entry.name == "Shell")
 
     assert shell.command == "explorer.exe"
@@ -61,7 +61,7 @@ def test_scan_marks_modified_shell(monkeypatch):
         },
     )
 
-    entries = winlogon.scan()
+    entries = winlogon.scan().entries
     shell = next(entry for entry in entries if entry.name == "Shell")
 
     assert shell.extra["matches_default"] is False
@@ -71,7 +71,7 @@ def test_scan_marks_modified_shell(monkeypatch):
 def test_scan_reports_missing_userinit(monkeypatch):
     setup_registry(monkeypatch, {"Shell": "explorer.exe"})
 
-    entries = winlogon.scan()
+    entries = winlogon.scan().entries
     userinit = next(entry for entry in entries if entry.name == "Userinit")
 
     assert userinit.command == ""
@@ -85,7 +85,7 @@ def test_scan_reports_missing_shell(monkeypatch):
         {"Userinit": r"C:\Windows\system32\userinit.exe,"},
     )
 
-    entries = winlogon.scan()
+    entries = winlogon.scan().entries
     shell = next(entry for entry in entries if entry.name == "Shell")
 
     assert shell.command == ""
@@ -103,7 +103,7 @@ def test_scan_handles_non_string_registry_data(monkeypatch):
     )
 
     # Unexpected registry data must not crash the scanner.
-    entries = winlogon.scan()
+    entries = winlogon.scan().entries
 
     shell = next(entry for entry in entries if entry.name == "Shell")
     assert shell.extra["matches_default"] is False

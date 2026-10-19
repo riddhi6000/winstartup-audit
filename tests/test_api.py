@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from winaudit import api
-from winaudit.scanners import AutostartEntry
+from winaudit.scanners import AutostartEntry, ScanReport
 
 
 def make_winlogon_entry(name, command, extra):
@@ -24,8 +24,7 @@ def make_winlogon_entry(name, command, extra):
 
 
 def setup_api_scan(monkeypatch, entry):
-    fake_scanner = SimpleNamespace(scan=lambda: [entry])
-
+    fake_scanner = SimpleNamespace(scan=lambda: ScanReport(scanner=entry.source, entries=[entry]))
     monkeypatch.setattr(api, "SCANNERS", [fake_scanner])
     monkeypatch.setattr(api.signature, "batch_check", lambda paths: {})
     monkeypatch.setattr(api, "load_baseline", lambda path: None)
