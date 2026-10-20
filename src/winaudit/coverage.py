@@ -4,6 +4,7 @@ A scan that silently skips things is worse than a scan that says what it
 skipped: "0 problems" is only meaningful alongside "and this is how much I
 was able to check".
 """
+import ntpath
 from collections import Counter
 
 from .scanners import ScanReport
@@ -11,6 +12,17 @@ from .scanners import ScanReport
 EXECUTABLE_STATES = ("found", "unexpanded", "missing", "no_path")
 SIGNATURE_STATES = ("checked", "inconclusive", "skipped", "not_applicable")
 VIRUSTOTAL_STATES = ("checked", "stale", "deferred", "error", "not_queried")
+VERIFICATION_STATES = ("complete", "partial", "none")
+
+# Programs whose job is to start other code (a DLL, a script, a group of
+# services). Their own signature says nothing about what they load, so an
+# entry that runs through one is at best partly verified until the code
+# behind it is examined too.
+HOST_PROGRAMS = frozenset({
+    "svchost.exe", "rundll32.exe", "regsvr32.exe", "dllhost.exe",
+    "cmd.exe", "powershell.exe", "pwsh.exe",
+    "wscript.exe", "cscript.exe", "mshta.exe",
+})
 
 # Statuses that mean Windows reached a definite answer about the signature.
 CONCLUSIVE_SIGNATURE_STATUSES = frozenset(
@@ -53,14 +65,33 @@ def virustotal_state(vt_result: dict | None) -> str:
     return "checked"
 
 
+def verification_state(result: dict, executable: str, signature: str) -> str:
+    """How much of what this entry runs has actually been examined.
+
+    complete -- the file it starts was found and its signature checked
+    partial  -- the file was found, but its signature was inconclusive or
+                skipped, or it only hosts other code (svchost, rundll32, ...)
+    none     -- no file could be examined
+    """
+    if executable != "found":
+        return "none"
+
+    host = ntpath.basename(result.get("executable_path") or "").lower()
+    if signature != "checked" or host in HOST_PROGRAMS:
+        return "partial"
+    return "complete"
+
+
 def classify_result(result: dict, executable: str) -> dict:
     """The per-entry record of which checks actually happened. `executable`
     is the state from risk.resolve_executable, so coverage and scoring can
     never disagree about whether a file was found."""
+    signature = signature_state(result, executable)
     return {
         "executable": executable,
-        "signature": signature_state(result, executable),
+        "signature": signature,
         "virustotal": virustotal_state(result.get("virustotal")),
+        "verification": verification_state(result, executable, signature),
     }
 
 
@@ -88,5 +119,6 @@ def build_coverage(reports: list[ScanReport], results: list[dict]) -> dict:
             "executable": _counts(results, "executable", EXECUTABLE_STATES),
             "signature": _counts(results, "signature", SIGNATURE_STATES),
             "virustotal": _counts(results, "virustotal", VIRUSTOTAL_STATES),
+            "verification": _counts(results, "verification", VERIFICATION_STATES),
         },
     }

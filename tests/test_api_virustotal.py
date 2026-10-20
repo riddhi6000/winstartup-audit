@@ -175,3 +175,21 @@ def test_an_unreadable_file_does_not_abort_the_scan(monkeypatch):
     assert "could not be read" in named["locked.exe"]["virustotal"]["error"]
     assert named["fine.exe"]["virustotal"]["found"] is True
     assert summary["entries"]["virustotal"]["error"] == 1
+
+
+def test_virustotal_reason_describes_what_the_engines_said(monkeypatch):
+    prepare(monkeypatch, {r"C:\Apps\bad.exe": ("NotSigned", None)})
+
+    def detected(path, allow_network):
+        return {"found": True, "malicious_count": 50, "total_engines": 70,
+                "from_cache": False, "stale": False, "network_call": True}
+
+    record_lookups(monkeypatch, detected)
+
+    results, _ = api.perform_scan()
+
+    reason = next(r for r in results[0]["reasons"] if r.startswith("VirusTotal"))
+    assert reason == (
+        "VirusTotal: 50 of 70 engines flagged this file as malicious or suspicious "
+        "— strong consensus"
+    )

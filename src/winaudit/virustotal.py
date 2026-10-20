@@ -82,7 +82,13 @@ def check_hash(file_hash: str) -> dict:
     stats = data["data"]["attributes"]["last_analysis_stats"]
     malicious = stats.get("malicious", 0)
     suspicious = stats.get("suspicious", 0)
-    total = sum(stats.values())
+
+    # Only engines that actually gave a verdict count. Engines that timed
+    # out, failed, or do not support this file type said nothing, so
+    # counting them would make a detection look rarer than it is.
+    total = malicious + suspicious + stats.get("undetected", 0) + stats.get("harmless", 0)
+    if total == 0:
+        total = sum(stats.values())  # keeps a file VirusTotal knows from reading as "not found"
 
     return {
         "found": True,

@@ -10,7 +10,7 @@ RECENT_DAYS_THRESHOLD = 30
 # A %VARIABLE% reference: a percent sign, one or more characters that are
 # neither a percent sign nor whitespace, then a closing percent sign.
 ENV_REFERENCE = re.compile(r"%([^%\s]+)%")
-NO_FLAGS_REASON = "No red flags — looks like a normal autostart entry"
+NO_FLAGS_REASON = "No concerns found in the checks that ran"
 
 @dataclass
 class RiskAssessment:

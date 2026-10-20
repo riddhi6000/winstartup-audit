@@ -301,22 +301,22 @@ def perform_scan() -> tuple[list[dict], dict]:
                 add_reason(
                     result,
                     15,
-                    f"VirusTotal: {malicious}/{total} security vendors flag "
-                    "this file as malicious — strong consensus",
+                    f"VirusTotal: {malicious} of {total} engines flagged this file "
+                    "as malicious or suspicious — strong consensus",
                 )
             elif ratio >= 0.3:
                 add_reason(
                     result,
                     10,
-                    f"VirusTotal: {malicious}/{total} security vendors flag "
-                    "this file as malicious",
+                    f"VirusTotal: {malicious} of {total} engines flagged this file "
+                    "as malicious or suspicious",
                 )
             elif ratio >= 0.1:
                 add_reason(
                     result,
                     5,
-                    f"VirusTotal: {malicious}/{total} security vendors flag "
-                    "this file as suspicious",
+                    f"VirusTotal: {malicious} of {total} engines flagged this file "
+                    "as malicious or suspicious — a minority of engines",
                 )
 
     # Recorded last, once VirusTotal has run, so each entry states which of

@@ -196,3 +196,36 @@ def test_http_404_means_not_found_not_clean(monkeypatch):
 
     assert result["found"] is False
     assert result["total_engines"] == 0
+
+
+# ---- which engines count ----------------------------------------------
+
+def fake_200(monkeypatch, stats):
+    monkeypatch.setenv("VIRUSTOTAL_API_KEY", "test-key")
+    monkeypatch.setattr(virustotal, "_respect_rate_limit", lambda: None)
+    body = {"data": {"attributes": {"last_analysis_stats": stats}}}
+    monkeypatch.setattr(
+        virustotal.requests, "get",
+        lambda *a, **k: SimpleNamespace(status_code=200, json=lambda: body),
+    )
+
+
+def test_engines_that_gave_no_verdict_are_not_counted(monkeypatch):
+    fake_200(monkeypatch, {
+        "malicious": 3, "suspicious": 1, "undetected": 60, "harmless": 2,
+        "timeout": 4, "type-unsupported": 9, "failure": 1,
+    })
+
+    result = virustotal.check_hash("a" * 64)
+
+    assert result["malicious_count"] == 4  # malicious plus suspicious
+    assert result["total_engines"] == 66   # 4 + 60 + 2; timeouts etc. left out
+
+
+def test_a_known_file_with_no_verdicts_is_still_found(monkeypatch):
+    fake_200(monkeypatch, {"timeout": 5, "type-unsupported": 60})
+
+    result = virustotal.check_hash("a" * 64)
+
+    assert result["found"] is True
+    assert result["total_engines"] == 65

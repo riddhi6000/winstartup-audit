@@ -82,6 +82,7 @@
       border-radius: 3px;
       margin-right: 0.4rem;
     }
+    .verify-note { color: #888; font-size: 0.7rem; font-weight: normal; }
     #removedSection {
       margin-top: 1.5rem;
       display: none;
@@ -201,7 +202,7 @@
   <table id="resultsTable" style="display:none">
     <thead>
       <tr>
-        <th>Risk</th>
+        <th title="Not a probability of malware. A higher number means more reasons to take a closer look.">Review score</th>
         <th></th>
         <th>Source</th>
         <th>Name</th>
@@ -248,6 +249,9 @@
     function renderCoverage(coverage, skippedSources) {
       const e = coverage.entries;
       const lines = [
+        `<div>Verification: ${e.verification.complete} fully verified, ` +
+          `${e.verification.partial} partly verified (inconclusive signature, or run through ` +
+          `a host program such as svchost or rundll32), ${e.verification.none} not verified.</div>`,
         `<div>Executables: ${e.executable.found} found, ` +
           `${e.executable.unexpanded} with unexpanded variables, ` +
           `${e.executable.missing} not found, ${e.executable.no_path} without a path.</div>`,
@@ -288,11 +292,17 @@
       return div.innerHTML;
     }
 
+    function verificationNote(level) {
+      if (level === 'none') return 'not verified';
+      if (level === 'partial') return 'partly verified';
+      return '';
+    }
+
     function formatVirusTotal(vt) {
       if (!vt) return '<span style="color:#666">—</span>';
       if (vt.deferred) return '<span style="color:#888">queued for the next scan</span>';
-      if (vt.error) return `<span style="color:#888">check failed</span>`;
-      if (!vt.found) return '<span style="color:#888">not in VT database</span>';
+      if (vt.error) return `<span style="color:#888" title="${escapeHtml(vt.error)}">check failed</span>`;
+      if (!vt.found) return '<span style="color:#888" title="Not a safety verdict: VirusTotal has no record of this exact file">never seen by VirusTotal</span>';
       const color = vt.malicious_count === 0 ? '#4ade80'
         : vt.malicious_count / vt.total_engines >= 0.3 ? '#f87171'
         : '#fbbf24';
@@ -350,7 +360,7 @@
           if (isNew) row.className = 'diff-new';
           else if (previousCommand !== undefined) row.className = 'diff-modified';
           row.innerHTML = `
-            <td class="score-cell ${scoreClass(entry.score)}">${entry.score}</td>
+            <td class="score-cell ${scoreClass(entry.score)}">${entry.score}<div class="verify-note">${verificationNote(entry.checks.verification)}</div></td>
             <td>
                 ${isNew ? '<span class="diff-badge">NEW</span>' : ''}
                 ${previousCommand !== undefined ? '<span class="diff-badge-modified">CHANGED</span>' : ''}
