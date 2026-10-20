@@ -10,7 +10,7 @@ from .scanners import ScanReport
 
 EXECUTABLE_STATES = ("found", "unexpanded", "missing", "no_path")
 SIGNATURE_STATES = ("checked", "inconclusive", "skipped", "not_applicable")
-VIRUSTOTAL_STATES = ("checked", "error", "not_queried")
+VIRUSTOTAL_STATES = ("checked", "stale", "deferred", "error", "not_queried")
 
 # Statuses that mean Windows reached a definite answer about the signature.
 CONCLUSIVE_SIGNATURE_STATUSES = frozenset(
@@ -36,10 +36,20 @@ def signature_state(result: dict, executable: str) -> str:
 
 
 def virustotal_state(vt_result: dict | None) -> str:
+    """checked    -- a current answer
+    stale      -- an older stored answer (the scan's request budget was spent or the refresh failed)
+    deferred   -- selected for a lookup, but the scan's budget ran out; a later scan will do it
+    error      -- the lookup failed
+    not_queried -- not selected for a lookup
+    """
     if not vt_result:
         return "not_queried"
+    if vt_result.get("deferred"):
+        return "deferred"
     if "error" in vt_result:
         return "error"
+    if vt_result.get("stale"):
+        return "stale"
     return "checked"
 
 

@@ -61,6 +61,15 @@
       font-size: 0.85rem;
       margin-bottom: 1rem;
     }
+    #coverage {
+      color: #b0b0b0;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      margin-bottom: 1rem;
+    }
+    #coverage ul { margin: 0.25rem 0 0 1.1rem; padding: 0; }
+    .coverage-warning { color: #fbbf24; }
+    .coverage-failed { color: #f87171; }
     .diff-new { background: rgba(248, 113, 113, 0.08); }
     .diff-modified { background: rgba(251, 191, 36, 0.08); }
     .diff-badge-modified {
@@ -183,6 +192,7 @@
     <button id="saveBaselineBtn">Save Current State as Baseline</button>
   </div>
   <div id="baselineInfo"></div>
+  <div id="coverage"></div>
   <div id="removedSection">
     <h2>Removed since baseline</h2>
     <ul id="removedList"></ul>
@@ -213,6 +223,7 @@
     const baselineInfo = document.getElementById('baselineInfo');
     const removedSection = document.getElementById('removedSection');
     const removedList = document.getElementById('removedList');
+    const coverageBox = document.getElementById('coverage');
     const apiToken = document.querySelector('meta[name="winaudit-token"]').content;
 
     async function apiFetch(url, options = {}) {
@@ -220,14 +231,49 @@
         ...options,
         headers: { ...(options.headers || {}), 'X-WinAudit-Token': apiToken },
       });
-      if (response.status === 403) {
-        throw new Error('Session expired or rejected — reload this page and try again');
+      if (!response.ok) {
+        let detail = `Server returned ${response.status}`;
+        try {
+          const body = await response.json();
+          if (typeof body.detail === 'string') detail = body.detail;
+        } catch (_) { /* the body was not JSON; keep the generic message */ }
+        if (response.status === 403) {
+          detail = 'Session expired or rejected — reload this page and try again';
+        }
+        throw new Error(detail);
       }
-      if (response.status === 409) {
-        throw new Error('A scan is already running — wait for it to finish');
-      }
-      if (!response.ok) throw new Error(`Server returned ${response.status}`);
       return response.json();
+    }
+
+    function renderCoverage(coverage, skippedSources) {
+      const e = coverage.entries;
+      const lines = [
+        `<div>Executables: ${e.executable.found} found, ` +
+          `${e.executable.unexpanded} with unexpanded variables, ` +
+          `${e.executable.missing} not found, ${e.executable.no_path} without a path.</div>`,
+        `<div>Signatures: ${e.signature.checked} of ${e.total} entries had a conclusive result ` +
+          `(${e.signature.inconclusive} inconclusive, ${e.signature.skipped} skipped).</div>`,
+        `<div>VirusTotal: ${e.virustotal.checked} checked, ` +
+          `${e.virustotal.stale} from an older check, ` +
+          `${e.virustotal.deferred} queued for the next scan, ` +
+          `${e.virustotal.error} failed, ${e.virustotal.not_queried} not selected for lookup.</div>`,
+      ];
+
+      const problems = coverage.scanners.filter(s => s.status !== 'complete');
+      if (problems.length > 0) {
+        lines.push('<ul>' + problems.map(s =>
+          `<li class="${s.status === 'failed' ? 'coverage-failed' : 'coverage-warning'}">` +
+          `<strong>${escapeHtml(s.scanner)}</strong> ${escapeHtml(s.status)}: ` +
+          `${escapeHtml(s.errors.join('; '))}</li>`
+        ).join('') + '</ul>');
+      }
+      if (skippedSources.length > 0) {
+        lines.push(
+          `<div class="coverage-warning">Baseline comparison skipped for: ` +
+          `${escapeHtml(skippedSources.join(', '))}</div>`
+        );
+      }
+      coverageBox.innerHTML = lines.join('');
     }
 
     function scoreClass(score) {
@@ -244,18 +290,20 @@
 
     function formatVirusTotal(vt) {
       if (!vt) return '<span style="color:#666">—</span>';
+      if (vt.deferred) return '<span style="color:#888">queued for the next scan</span>';
       if (vt.error) return `<span style="color:#888">check failed</span>`;
       if (!vt.found) return '<span style="color:#888">not in VT database</span>';
       const color = vt.malicious_count === 0 ? '#4ade80'
         : vt.malicious_count / vt.total_engines >= 0.3 ? '#f87171'
         : '#fbbf24';
-      return `<span style="color:${color}">${vt.malicious_count}/${vt.total_engines} flagged</span>`;
-    }
+      const age = vt.stale ? ' (older result)' : '';
+      return `<span style="color:${color}">${vt.malicious_count}/${vt.total_engines} flagged${age}</span>`;    }
 
     async function runScan() {
       btn.disabled = true;
       btn.textContent = 'Scanning... (this can take up to a minute)';
       summary.textContent = '';
+      coverageBox.innerHTML = '';
       table.style.display = 'none';
       tbody.innerHTML = '';
 
@@ -264,7 +312,7 @@
 
         summary.textContent =
           `${data.total_entries} autostart entries found — ${data.flagged_count} flagged for review.`;
-
+        renderCoverage(data.coverage, data.diff_skipped_sources || []);
         if (data.baseline_saved_at) {
           const savedDate = new Date(data.baseline_saved_at).toLocaleString();
           const d = data.diff;
@@ -335,8 +383,10 @@
       saveBaselineBtn.textContent = 'Saving...';
       try {
         const data = await apiFetch('/api/baseline/save', { method: 'POST' });
-        baselineInfo.textContent = `Baseline saved — ${data.entry_count} entries recorded.`;
-      } catch (err) {
+        const note = data.incomplete_scanners.length > 0
+          ? ` Incomplete scanners: ${data.incomplete_scanners.join(', ')}.`
+          : '';
+        baselineInfo.textContent = `Baseline saved — ${data.entry_count} entries recorded.${note}`;      } catch (err) {
         baselineInfo.textContent = `Failed to save baseline: ${err.message}`;
       } finally {
         saveBaselineBtn.disabled = false;

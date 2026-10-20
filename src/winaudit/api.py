@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from .scanners import registry_run, startup_folder, scheduled_tasks, services, winlogon, ScanReport
-from . import coverage, risk, signature, virustotal
+from . import coverage, lookup_policy, risk, signature, virustotal
 from .baseline import save_baseline, load_baseline, diff as diff_entries
 from datetime import datetime, timedelta
 
@@ -261,18 +261,31 @@ def perform_scan() -> tuple[list[dict], dict]:
             "virustotal": None,
         })
 
-    # Only ever check VirusTotal for entries our own risk scoring already
-    # flagged -- this respects the free-tier rate limit (checking all 286+
-    # entries every scan would be both wasteful and far too slow) and
-    # focuses VirusTotal's slower, more authoritative answer on exactly
-    # the handful of things actually worth it.
+    # VirusTotal is asked about the files where the answer matters most,
+    # most important first, and only up to a fixed number of real requests
+    # per scan (see virustotal.MAX_API_LOOKUPS_PER_SCAN). Files that do not
+    # fit are marked "deferred" and are looked up by a later scan. Answers
+    # already stored and still fresh cost nothing.
+    candidates = []
     for result in results:
-        if result["score"] == 0:
-            continue
-        exe_path = result["executable_path"]
-        if not exe_path:
-            continue
-        vt_result = virustotal.check_file(exe_path)
+        rank = lookup_policy.priority(result)
+        if rank is not None:
+            candidates.append((rank, -result["score"], result["name"], result))
+    candidates.sort(key=lambda candidate: candidate[:3])
+
+    requests_left = virustotal.MAX_API_LOOKUPS_PER_SCAN
+    for _rank, _score, _name, result in candidates:
+        try:
+            vt_result = virustotal.check_file(
+                result["executable_path"], allow_network=requests_left > 0
+            )
+        except OSError as exc:
+            vt_result = {"error": f"File could not be read ({exc.strerror or exc})"}
+
+        if vt_result.get("network_call"):
+            requests_left -= 1
+        if vt_result.get("rate_limited"):
+            requests_left = 0  # the quota is used up; stop asking this scan
         result["virustotal"] = vt_result
 
         if "error" not in vt_result and vt_result.get("found"):

@@ -23,6 +23,9 @@ def test_virustotal_state_variants():
     assert coverage.virustotal_state(None) == "not_queried"
     assert coverage.virustotal_state({"error": "rate limited"}) == "error"
     assert coverage.virustotal_state({"found": False, "malicious_count": 0}) == "checked"
+    assert coverage.virustotal_state({"found": True, "stale": True}) == "stale"
+    assert coverage.virustotal_state({"found": True, "stale": False}) == "checked"
+    assert coverage.virustotal_state({"deferred": True}) == "deferred"
 
 
 def test_classify_result_combines_the_three_checks():

@@ -66,12 +66,11 @@ def assess(entry: AutostartEntry, signature_checker=None) -> RiskAssessment:
         except OSError:
             created = None
 
-    if created and created > datetime.now() - timedelta(days=RECENT_DAYS_THRESHOLD):
-        score += 1
-        reasons.append(f"Executable created recently ({created.date()})")
-
     is_store_app = "\\windowsapps\\" in command_lower
 
+    # Set when a valid signature has been confirmed. Used below: a recently
+    # replaced file is only worth a point when nothing else vouches for it.
+    trusted_signature = False
 
     if is_store_app:
         reasons.append(
@@ -90,7 +89,7 @@ def assess(entry: AutostartEntry, signature_checker=None) -> RiskAssessment:
             status_message = signature_result.get("status_message", "")
 
             if status == "Valid" and checked and signed:
-                pass  # Signature is valid; no signature-related penalty.
+                trusted_signature = True  # no signature-related penalty
 
             elif status == "NotSigned" and checked:
                 score += 2
@@ -126,6 +125,22 @@ def assess(entry: AutostartEntry, signature_checker=None) -> RiskAssessment:
             score += 2
             reasons.append("Executable is not digitally signed")
 
+
+    # A recently created file is only a supporting signal, and only when
+    # nothing else vouches for it. Windows Update and ordinary software
+    # updates replace validly signed files all the time, so counting those
+    # would flag half of a healthy machine after every patch day.
+    if (
+        created
+        and not trusted_signature
+        and not is_store_app
+        and created > datetime.now() - timedelta(days=RECENT_DAYS_THRESHOLD)
+    ):
+        score += 1
+        reasons.append(
+            f"Executable created recently ({created.date()}) "
+            "and is not covered by a verified signature"
+        )
 
     if not reasons:
         reasons.append(NO_FLAGS_REASON)
