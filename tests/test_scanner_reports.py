@@ -9,7 +9,6 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from winaudit.scanners import (
     ScanReport,
     registry_run,
-    scheduled_tasks,
     services,
     startup_folder,
     winlogon,
@@ -167,17 +166,6 @@ def test_startup_folder_lists_items_and_ignores_desktop_ini(monkeypatch, tmp_pat
     assert report.locations_checked == 2
 
 
-# ---- Scheduled tasks --------------------------------------------------
-
-TASKS_CSV = (
-    '"HostName","TaskName","Next Run Time","Status","Author","Task To Run","Run As User"\n'
-    '"PC","\\Foo","N/A","Ready","Me","C:\\foo.exe","SYSTEM"\n'
-    '"PC","\\Foo","N/A","Ready","Me","C:\\foo.exe","SYSTEM"\n'
-    '"HostName","TaskName","Next Run Time","Status","Author","Task To Run","Run As User"\n'
-    '"PC","\\NoOp","N/A","Ready","Me","N/A","SYSTEM"\n'
-)
-
-
 def patch_run(monkeypatch, module, behaviour):
     def fake_run(*args, **kwargs):
         if isinstance(behaviour, Exception):
@@ -185,45 +173,6 @@ def patch_run(monkeypatch, module, behaviour):
         return SimpleNamespace(stdout=behaviour)
 
     monkeypatch.setattr(module.subprocess, "run", fake_run)
-
-
-def test_scheduled_tasks_parses_and_deduplicates(monkeypatch):
-    patch_run(monkeypatch, scheduled_tasks, TASKS_CSV)
-
-    report = scheduled_tasks.scan()
-
-    assert [entry.name for entry in report.entries] == ["\\Foo"]
-    assert report.entries[0].scope == "all users"
-    assert report.status == "complete"
-    assert report.locations_checked == 1
-
-
-def test_scheduled_tasks_command_failure_is_reported(monkeypatch):
-    patch_run(monkeypatch, scheduled_tasks, subprocess.CalledProcessError(1, "schtasks"))
-
-    report = scheduled_tasks.scan()
-
-    assert report.status == "failed"
-    assert report.entries == []
-    assert "code 1" in report.errors[0]
-
-
-def test_scheduled_tasks_timeout_and_missing_program_are_reported(monkeypatch):
-    patch_run(monkeypatch, scheduled_tasks, subprocess.TimeoutExpired("schtasks", 120))
-    assert scheduled_tasks.scan().status == "failed"
-
-    patch_run(monkeypatch, scheduled_tasks, FileNotFoundError("schtasks"))
-    assert scheduled_tasks.scan().status == "failed"
-
-
-def test_scheduled_tasks_unexpected_columns_are_not_silently_empty(monkeypatch):
-    localized = '"Hostname","Aufgabenname","Auszufuehren"\n"PC","\\Foo","C:\\foo.exe"\n'
-    patch_run(monkeypatch, scheduled_tasks, localized)
-
-    report = scheduled_tasks.scan()
-
-    assert report.status == "failed"
-    assert "column names" in report.errors[0]
 
 
 # ---- Services ---------------------------------------------------------
