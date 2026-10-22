@@ -190,3 +190,16 @@ def test_variable_paths_are_expanded_before_the_signature_check(monkeypatch):
     assert results[0]["checks"]["executable"] == "found"
     assert results[0]["checks"]["signature"] == "checked"
     assert summary["entries"]["signature"]["checked"] == 1
+
+
+def test_scanner_details_are_included_in_each_result(monkeypatch):
+    entry = make_entry(r"C:\Program Files\App\app.exe", source="Windows Service", name="Svc")
+    entry.extra = {"start_mode": "Disabled", "state": "Stopped"}
+    scanner = SimpleNamespace(scan=lambda: ScanReport(scanner="Windows Service", entries=[entry]))
+    monkeypatch.setattr(api, "SCANNERS", [scanner])
+    monkeypatch.setattr(api.signature, "batch_check", lambda paths: {})
+    monkeypatch.setattr(api.os.path, "exists", lambda path: False)
+
+    results, _ = api.perform_scan()
+
+    assert results[0]["extra"] == {"start_mode": "Disabled", "state": "Stopped"}

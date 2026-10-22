@@ -178,9 +178,11 @@ def patch_run(monkeypatch, module, behaviour):
 # ---- Services ---------------------------------------------------------
 
 SERVICES_CSV = (
-    '"Name","PathName","StartName"\n'
-    '"Svc","C:\\svc.exe -k group","LocalSystem"\n'
-    '"NoPath","","LocalSystem"\n'
+    '"Name","PathName","StartName","StartMode","State"\n'
+    '"Svc","C:\\svc.exe -k group","LocalSystem","Auto","Running"\n'
+    '"Dormant","C:\\dormant.exe","LocalSystem","Disabled","Stopped"\n'
+    '"OnDemand","C:\\ondemand.exe","LocalSystem","Manual","Stopped"\n'
+    '"NoPath","","LocalSystem","Auto","Running"\n'
 )
 
 
@@ -189,9 +191,26 @@ def test_services_parses_entries(monkeypatch):
 
     report = services.scan()
 
-    assert [entry.name for entry in report.entries] == ["Svc"]
+    assert [entry.name for entry in report.entries] == ["Svc", "Dormant", "OnDemand"]
     assert report.entries[0].extra["run_as"] == "LocalSystem"
     assert report.status == "complete"
+
+
+def test_services_of_every_start_type_are_listed_with_their_state(monkeypatch):
+    patch_run(monkeypatch, services, SERVICES_CSV)
+
+    by_name = {entry.name: entry.extra for entry in services.scan().entries}
+
+    assert by_name["Svc"]["start_mode"] == "Auto"
+    assert by_name["Svc"]["state"] == "Running"
+    assert by_name["Dormant"]["start_mode"] == "Disabled"
+    assert by_name["Dormant"]["state"] == "Stopped"
+    assert by_name["OnDemand"]["start_mode"] == "Manual"
+
+
+def test_services_query_does_not_filter_by_start_type():
+    assert "StartMode='Auto'" not in services.PS_COMMAND
+    assert "StartMode" in services.PS_COMMAND
 
 
 def test_services_failure_and_empty_output_are_reported(monkeypatch):

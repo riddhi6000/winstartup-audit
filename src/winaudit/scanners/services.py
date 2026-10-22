@@ -7,9 +7,14 @@ SOURCE = "Windows Service"
 POWERSHELL_TIMEOUT_SECONDS = 120
 REQUIRED_COLUMNS = ("Name", "PathName")
 
+# Every service is listed, whatever its start type. A service set to
+# Manual or Disabled is not part of the boot sequence, but it is still code
+# installed on the machine that anything with administrator rights can
+# switch back on -- and a service that vanished from the list only because
+# it was disabled would otherwise look "removed" while its file is still there.
 PS_COMMAND = (
-    "Get-CimInstance -ClassName Win32_Service -Filter \"StartMode='Auto'\" | "
-    "Select-Object Name, PathName, StartName | "
+    "Get-CimInstance -ClassName Win32_Service | "
+    "Select-Object Name, PathName, StartName, StartMode, State | "
     "ConvertTo-Csv -NoTypeInformation"
 )
 
@@ -46,7 +51,11 @@ def scan() -> ScanReport:
             command=path,
             location="Service Control Manager",
             scope="all users",
-            extra={"run_as": (row.get("StartName") or "").strip()},
+            extra={
+                "run_as": (row.get("StartName") or "").strip(),
+                "start_mode": (row.get("StartMode") or "").strip(),
+                "state": (row.get("State") or "").strip(),
+            },
         ))
 
     report.locations_checked = 1

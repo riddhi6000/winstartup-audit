@@ -57,56 +57,9 @@ BASELINE_PATH = PROJECT_ROOT / "baseline.json"
 SCANNERS = [registry_run, startup_folder, scheduled_tasks, services, winlogon]
 
 
-# Dual-use utilities that can be abused to execute code or scripts.
-# Their presence alone is NOT suspicious; command arguments matter.
-SUSPICIOUS_LOLBIN_NAMES = {
-    "powershell.exe",
-    "pwsh.exe",
-    "cmd.exe",
-    "mshta.exe",
-    "wscript.exe",
-    "cscript.exe",
-    "rundll32.exe",
-    "regsvr32.exe",
-    "certutil.exe",
-    "bitsadmin.exe",
-    "msbuild.exe",
-    "installutil.exe",
-}
-
-SUSPICIOUS_COMMAND_MARKERS = (
-    "-encodedcommand",
-    " -enc ",
-    "downloadstring",
-    "downloadfile",
-    "invoke-expression",
-    "invoke-webrequest",
-    "frombase64string",
-    "javascript:",
-    "vbscript:",
-    "scrobj.dll",
-    " -windowstyle hidden",
-    " -w hidden",
-    " -executionpolicy bypass",
-    " -ep bypass",
-)
-
-
-def has_suspicious_lolbin_command(command: str) -> bool:
-    """Flag known dual-use utilities only when arguments are suspicious."""
-    if not isinstance(command, str) or not command.strip():
-        return False
-
-    exe_path = risk.extract_exe_path(command)
-    if not exe_path:
-        return False
-
-    executable_name = os.path.basename(exe_path).lower()
-    if executable_name not in SUSPICIOUS_LOLBIN_NAMES:
-        return False
-
-    command_lower = command.lower()
-    return any(marker in command_lower for marker in SUSPICIOUS_COMMAND_MARKERS)
+# Kept under its old name for existing callers; the logic lives in risk.py so
+# that it applies to every scan, not only to entries new since a baseline.
+has_suspicious_lolbin_command = risk.has_suspicious_lolbin_command
 
 
 def require_local_client(request: Request) -> None:
@@ -245,6 +198,7 @@ def perform_scan() -> tuple[list[dict], dict]:
             "scope": entry.scope,
             "created": entry.created.isoformat() if entry.created else None,
             "executable_path": exe_path,
+            "extra": entry.extra,
             "score": assessment.score,
             "reasons": assessment.reasons,
             "publisher": publisher,
@@ -319,6 +273,22 @@ def perform_scan() -> tuple[list[dict], dict]:
                     "as malicious or suspicious — a minority of engines",
                 )
 
+        # A file nobody has ever submitted to VirusTotal is unusual for
+        # software that is widely distributed. By itself it proves nothing
+        # (new or private software is unknown too), so it only counts when the
+        # signature does not vouch for the file either.
+        if (
+            "error" not in vt_result
+            and not vt_result.get("deferred")
+            and not vt_result.get("found")
+            and result["signature_status"] != "Valid"
+        ):
+            add_reason(
+                result,
+                2,
+                "Never seen by VirusTotal, and its signature is not valid or could not be verified",
+            )
+
     # Recorded last, once VirusTotal has run, so each entry states which of
     # its checks actually happened.
     for result, resolved in zip(results, resolved_entries):
@@ -375,38 +345,6 @@ def run_scan():
             key = (result["source"], result["name"], result["location"])
             if key in modified_lookup:
                 add_reason(result, 3, f"Changed since last baseline (was: {modified_lookup[key]})")
-        results.sort(key=lambda r: r["score"], reverse=True)
-
-        # Only add the living-off-the-land penalty when a new
-        # registration uses a known dual-use utility with suspicious
-        # command arguments. A new entry pointing to an old executable
-        # is not enough on its own.
-        for entry_dict in diff_result["new"]:
-            if not has_suspicious_lolbin_command(entry_dict["command"]):
-                continue
-
-            key = (
-                entry_dict["source"],
-                entry_dict["name"],
-                entry_dict["location"],
-            )
-
-            for result in results:
-                result_key = (
-                    result["source"],
-                    result["name"],
-                    result["location"],
-                )
-
-                if result_key == key:
-                    add_reason(
-                        result,
-                        4,
-                        "New autostart entry uses a dual-use utility "
-                        "with suspicious command arguments",
-                    )
-                    break
-
         results.sort(key=lambda r: r["score"], reverse=True)
 
     return {

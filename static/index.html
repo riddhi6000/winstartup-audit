@@ -292,6 +292,14 @@
       return div.innerHTML;
     }
 
+    function startNote(entry) {
+      const extra = entry.extra || {};
+      if (!extra.start_mode) return '';
+      const parts = [`start type: ${extra.start_mode.toLowerCase()}`];
+      if (extra.state) parts.push(extra.state.toLowerCase());
+      return parts.join(' · ');
+    }
+
     function verificationNote(level) {
       if (level === 'none') return 'not verified';
       if (level === 'partial') return 'partly verified';
@@ -366,7 +374,7 @@
                 ${previousCommand !== undefined ? '<span class="diff-badge-modified">CHANGED</span>' : ''}
             </td>
             <td>${escapeHtml(entry.source)}</td>
-            <td>${escapeHtml(entry.name)}</td>
+            <td>${escapeHtml(entry.name)}<div class="verify-note">${escapeHtml(startNote(entry))}</div></td>
             <td class="command">
                 ${escapeHtml(entry.command)}
                 ${previousCommand !== undefined ? `<br><span style="color:#888">was: ${escapeHtml(previousCommand)}</span>` : ''}
