@@ -1,12 +1,31 @@
+import hashlib
 import json
+import logging
 import os
+import shutil
 import tempfile
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 import re
 
+logger = logging.getLogger("winaudit")
+
 REQUIRED_ENTRY_FIELDS = ("source", "name", "location", "command")
+
+SCHEMA_VERSION = 2
+
+# What a baseline remembers about each entry: who it is, what it runs, and
+# enough about the program file to notice if it is swapped for another.
+# Scores, reasons and VirusTotal answers are deliberately not kept: they are
+# opinions that change with the rules and with time, not facts about the machine.
+SAVED_FIELDS = (
+    "source", "name", "location", "command",
+    "executable_path", "sha256", "publisher", "signature_status",
+)
+
+HISTORY_FOLDER_NAME = "baseline_history"
+HISTORY_KEEP = 5
 
 # Parts of a name or command that Windows and installers change on their own
 # without anything having been added or removed: identifiers, hashes, and
@@ -90,16 +109,80 @@ def _normalize_command_for_comparison(command: str) -> str:
 
     return normalized
 
+def start_setting(entry: dict) -> str | None:
+    """How an entry is set to start: a service's start type, or whether a
+    scheduled task is enabled. None for entries that have no such setting."""
+    extra = entry.get("extra")
+    if not isinstance(extra, dict):
+        return None
+    if extra.get("start_mode"):
+        return extra["start_mode"]
+    if extra.get("action_type") and extra.get("state"):
+        return "Disabled" if extra["state"] == "Disabled" else "Enabled"
+    return None
+
+
+def _setting_of(entry: dict) -> str | None:
+    return entry.get("start_setting") or start_setting(entry)
+
+
+def _slim(entry: dict) -> dict:
+    slim = {field: entry[field] for field in SAVED_FIELDS if field in entry}
+    setting = start_setting(entry)
+    if setting is not None:
+        slim["start_setting"] = setting
+    return slim
+
+
+def _checksum(entries: list[dict]) -> str:
+    canonical = json.dumps(entries, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _archive_previous(path: Path) -> None:
+    """Keeps the baseline being replaced, and the last few before it, so a
+    mistaken save (or one made while something bad was present) can be
+    undone by hand. Best effort: failing to archive never blocks a save."""
+    if not path.exists():
+        return
+
+    try:
+        history = path.parent / HISTORY_FOLDER_NAME
+        history.mkdir(exist_ok=True)
+
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        destination = history / f"baseline-{stamp}.json"
+        counter = 1
+        while destination.exists():
+            destination = history / f"baseline-{stamp}-{counter}.json"
+            counter += 1
+        shutil.copy2(path, destination)
+
+        for old in sorted(history.glob("baseline-*.json"), reverse=True)[HISTORY_KEEP:]:
+            old.unlink()
+    except OSError:
+        logger.warning("Could not archive the previous baseline", exc_info=True)
+
+
 def save_baseline(entries: list[dict], path: Path) -> None:
-    """Validate and atomically save a baseline JSON file."""
+    """Validate and atomically save a baseline JSON file.
+
+    The file records only what a baseline needs (see SAVED_FIELDS), a schema
+    version, and a checksum of the entries. The checksum catches damage and
+    casual edits; it is not a defence against someone who can rewrite the
+    file and recompute it. The previous baseline is archived first."""
     _validate_entries(entries)
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    slim_entries = [_slim(entry) for entry in entries]
+
     data = {
+        "schema_version": SCHEMA_VERSION,
         "saved_at": datetime.now().isoformat(),
-        "entries": entries,
+        "entries_sha256": _checksum(slim_entries),
+        "entries": slim_entries,
     }
 
     temp_path = None
@@ -119,6 +202,8 @@ def save_baseline(entries: list[dict], path: Path) -> None:
             temp_file.write("\n")
             temp_file.flush()
             os.fsync(temp_file.fileno())
+
+        _archive_previous(path)
 
         # The temporary file is in the same directory, allowing
         # an atomic replacement on the same filesystem.
@@ -152,6 +237,22 @@ def load_baseline(path: Path) -> dict | None:
         raise ValueError("Baseline must contain an 'entries' list.")
 
     _validate_entries(data["entries"])
+
+    if "schema_version" not in data:
+        data["legacy"] = True  # saved by an older version; no checksum to verify
+        return data
+
+    if data["schema_version"] != SCHEMA_VERSION:
+        raise ValueError(
+            f"Baseline format version {data['schema_version']} is not supported. "
+            "Save a new baseline."
+        )
+
+    if data.get("entries_sha256") != _checksum(data["entries"]):
+        raise ValueError(
+            "Baseline file failed its integrity check (it was changed or damaged). "
+            "Save a new baseline."
+        )
 
     return data
 
@@ -213,8 +314,26 @@ def _pair_rotated(new_entries: list[dict], removed_entries: list[dict]):
     return still_new, sorted(still_removed, key=_sort_key), rotated
 
 
+def _is_routine_update(current: dict, baseline: dict) -> bool:
+    """A program file that changed but is still validly signed by the same
+    publisher, as it was in the baseline: what an ordinary update looks like."""
+    return (
+        current.get("signature_status") == "Valid"
+        and baseline.get("signature_status") == "Valid"
+        and bool(current.get("publisher"))
+        and current.get("publisher") == baseline.get("publisher")
+    )
+
+
 def diff(current_entries: list[dict], baseline_entries: list[dict]) -> dict:
     """Compare current entries against a saved baseline.
+
+    Reported separately for entries present in both:
+      modified          -- the command changed
+      binary_changed    -- same command, but the program file's contents
+                           differ ("routine" when it is still validly signed
+                           by the same publisher, as updates are)
+      settings_changed  -- the start type (or enabled state) changed
 
     The result lists are in a fixed order (by source and name), so the same
     two inputs always give the same output."""
@@ -229,6 +348,9 @@ def diff(current_entries: list[dict], baseline_entries: list[dict]) -> dict:
     shared_keys = current_by_key.keys() & baseline_by_key.keys()
 
     modified = []
+    binary_changed = []
+    settings_changed = []
+    changed_keys = set()
 
     for key in sorted(shared_keys):
         current_entry = current_by_key[key]
@@ -246,6 +368,29 @@ def diff(current_entries: list[dict], baseline_entries: list[dict]) -> dict:
                 "entry": current_entry,
                 "previous_command": baseline_entry["command"],
             })
+            changed_keys.add(key)
+        else:
+            current_hash = current_entry.get("sha256")
+            baseline_hash = baseline_entry.get("sha256")
+            if isinstance(current_hash, str) and isinstance(baseline_hash, str) and current_hash != baseline_hash:
+                routine = _is_routine_update(current_entry, baseline_entry)
+                binary_changed.append({
+                    "entry": current_entry,
+                    "previous_sha256": baseline_hash,
+                    "routine": routine,
+                })
+                if not routine:
+                    changed_keys.add(key)
+
+        current_setting = _setting_of(current_entry)
+        baseline_setting = _setting_of(baseline_entry)
+        if current_setting and baseline_setting and current_setting != baseline_setting:
+            settings_changed.append({
+                "entry": current_entry,
+                "previous": baseline_setting,
+                "current": current_setting,
+            })
+            changed_keys.add(key)
 
     new_entries = sorted((current_by_key[k] for k in new_keys), key=_sort_key)
     removed_entries = sorted((baseline_by_key[k] for k in removed_keys), key=_sort_key)
@@ -255,7 +400,10 @@ def diff(current_entries: list[dict], baseline_entries: list[dict]) -> dict:
         "new": new_entries,
         "removed": removed_entries,
         "modified": modified,
+        "binary_changed": binary_changed,
+        "settings_changed": settings_changed,
+        "updated_routine_count": sum(1 for change in binary_changed if change["routine"]),
         "rotated": rotated,
         "rotated_count": len(rotated),
-        "unchanged_count": len(shared_keys) - len(modified),
+        "unchanged_count": len(shared_keys) - len(changed_keys),
     }

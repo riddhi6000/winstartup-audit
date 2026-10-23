@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from .scanners import registry_run, startup_folder, scheduled_tasks, services, winlogon, ScanReport
-from . import coverage, lookup_policy, risk, signature, virustotal
+from . import coverage, hash_cache, lookup_policy, risk, signature, virustotal
 from .baseline import save_baseline, load_baseline, diff as diff_entries
 from datetime import datetime, timedelta
 
@@ -173,6 +173,16 @@ def perform_scan() -> tuple[list[dict], dict]:
 
     signature_results = signature.batch_check(list(exe_paths))
 
+    # A fingerprint of each program file, so a later scan can tell whether the
+    # file behind an unchanged path was swapped for different contents. Each
+    # distinct file is read once however many entries point to it.
+    file_hashes = {}
+    for path in exe_paths:
+        try:
+            file_hashes[path] = hash_cache.compute_sha256(path)
+        except OSError:
+            file_hashes[path] = None  # unreadable; no fingerprint to compare
+
     def sig_checker(path: str) -> dict:
         return signature_results.get(
             path,
@@ -198,6 +208,7 @@ def perform_scan() -> tuple[list[dict], dict]:
             "scope": entry.scope,
             "created": entry.created.isoformat() if entry.created else None,
             "executable_path": exe_path,
+            "sha256": file_hashes.get(exe_path) if exe_path else None,
             "extra": entry.extra,
             "score": assessment.score,
             "reasons": assessment.reasons,
@@ -345,6 +356,37 @@ def run_scan():
             key = (result["source"], result["name"], result["location"])
             if key in modified_lookup:
                 add_reason(result, 3, f"Changed since last baseline (was: {modified_lookup[key]})")
+        results_by_key = {
+            (result["source"], result["name"], result["location"]): result
+            for result in results
+        }
+
+        # A program file whose contents changed behind an unchanged path.
+        # Ordinary updates (still validly signed by the same publisher) are
+        # listed but not scored; anything else is the classic way of
+        # taking over a trusted entry.
+        for change in diff_result["binary_changed"]:
+            if change["routine"]:
+                continue
+            entry = change["entry"]
+            result = results_by_key.get((entry["source"], entry["name"], entry["location"]))
+            if result is not None:
+                add_reason(
+                    result, 4,
+                    "Program file was replaced since the baseline, and it is no longer "
+                    "validly signed by the same publisher",
+                )
+
+        for change in diff_result["settings_changed"]:
+            entry = change["entry"]
+            result = results_by_key.get((entry["source"], entry["name"], entry["location"]))
+            if result is None:
+                continue
+            if change["previous"] == "Disabled":
+                add_reason(result, 3, "Was disabled in the baseline and is enabled now")
+            elif change["current"] == "Auto":
+                add_reason(result, 1, f"Start type changed to Auto (was {change['previous']})")
+
         results.sort(key=lambda r: r["score"], reverse=True)
 
     return {

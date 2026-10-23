@@ -19,12 +19,13 @@ def _get_connection() -> sqlite3.Connection:
 
 
 def compute_sha256(file_path: str) -> str:
-    """Reads a file in small chunks rather than all at once -- some
-    executables can be large, and we don't want to load an entire file
-    into memory just to hash it."""
+    """Reads a file in 1 MiB chunks rather than all at once -- some
+    executables are large, and we don't want to load an entire file into
+    memory just to hash it. Hashing runs for every program on every scan, so
+    the chunk is big enough to keep that fast."""
     sha256 = hashlib.sha256()
     with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
             sha256.update(chunk)
     return sha256.hexdigest()
 

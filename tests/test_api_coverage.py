@@ -258,3 +258,131 @@ def test_refusal_message_lists_only_the_first_few_names(client, monkeypatch):
 
     assert "8 flagged entries" in detail
     assert "and 3 more" in detail
+
+
+# ---- file fingerprints and what changed since the baseline ---------------
+
+def test_every_program_file_is_fingerprinted_once(monkeypatch):
+    shared = r"C:\Windows\System32\svchost.exe"
+    entries = [
+        make_entry(shared + " -k one", name="One"),
+        make_entry(shared + " -k two", name="Two"),
+    ]
+    scanner = SimpleNamespace(scan=lambda: ScanReport(scanner="Registry Run Key", entries=entries))
+    hashed = []
+
+    def fake_hash(path):
+        hashed.append(path)
+        return "c" * 64
+
+    monkeypatch.setattr(api, "SCANNERS", [scanner])
+    monkeypatch.setattr(api.signature, "batch_check", lambda paths: {})
+    monkeypatch.setattr(api.os.path, "exists", lambda path: True)
+    monkeypatch.setattr(api.hash_cache, "compute_sha256", fake_hash)
+    monkeypatch.setattr(
+        api.virustotal, "check_file",
+        lambda path, allow_network=True: {"deferred": True, "network_call": False, "from_cache": False},
+    )
+
+    results, _ = api.perform_scan()
+
+    assert hashed == [shared]
+    assert [result["sha256"] for result in results] == ["c" * 64, "c" * 64]
+
+
+def test_unreadable_program_file_has_no_fingerprint_and_does_not_stop_the_scan(monkeypatch):
+    entry = make_entry(r"C:\Locked\app.exe")
+    scanner = SimpleNamespace(scan=lambda: ScanReport(scanner="Registry Run Key", entries=[entry]))
+
+    def locked(path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(api, "SCANNERS", [scanner])
+    monkeypatch.setattr(api.signature, "batch_check", lambda paths: {})
+    monkeypatch.setattr(api.os.path, "exists", lambda path: True)
+    monkeypatch.setattr(api.hash_cache, "compute_sha256", locked)
+    monkeypatch.setattr(
+        api.virustotal, "check_file",
+        lambda path, allow_network=True: {"deferred": True, "network_call": False, "from_cache": False},
+    )
+
+    results, _ = api.perform_scan()
+
+    assert results[0]["sha256"] is None
+
+
+def scan_against(client, monkeypatch, current, baseline):
+    monkeypatch.setattr(
+        api, "perform_scan",
+        lambda: (current, coverage_with(("Registry Run Key", "complete"), ("Windows Service", "complete"))),
+    )
+    monkeypatch.setattr(api, "load_baseline", lambda path: {"saved_at": "t", "entries": baseline})
+    return client.get("/api/scan", headers=HEADERS).json()
+
+
+def result_row(**overrides):
+    row = {
+        "source": "Registry Run Key", "name": "App", "location": "HKCU\\Run",
+        "command": r"C:\Apps\app.exe", "scope": "current user", "score": 0,
+        "reasons": [api.risk.NO_FLAGS_REASON], "sha256": "b" * 64,
+        "publisher": "CN=Vendor", "signature_status": "Valid",
+    }
+    row.update(overrides)
+    return row
+
+
+def baseline_row(**overrides):
+    row = {
+        "source": "Registry Run Key", "name": "App", "location": "HKCU\\Run",
+        "command": r"C:\Apps\app.exe", "sha256": "a" * 64,
+        "publisher": "CN=Vendor", "signature_status": "Valid",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_replaced_unsigned_program_file_raises_the_score(client, monkeypatch):
+    current = [result_row(signature_status="NotSigned", publisher=None)]
+
+    body = scan_against(client, monkeypatch, current, [baseline_row()])
+
+    assert body["entries"][0]["score"] == 4
+    assert "Program file was replaced since the baseline" in body["entries"][0]["reasons"][0]
+
+
+def test_ordinary_update_is_not_scored(client, monkeypatch):
+    body = scan_against(client, monkeypatch, [result_row()], [baseline_row()])
+
+    assert body["entries"][0]["score"] == 0
+    assert body["diff"]["updated_routine_count"] == 1
+
+
+def test_service_that_was_disabled_and_is_enabled_again_is_scored(client, monkeypatch):
+    current = [result_row(
+        source="Windows Service", name="Svc", location="SCM", sha256=None,
+        extra={"start_mode": "Auto", "state": "Running"},
+    )]
+    baseline = [baseline_row(
+        source="Windows Service", name="Svc", location="SCM", sha256=None,
+        start_setting="Disabled",
+    )]
+
+    body = scan_against(client, monkeypatch, current, baseline)
+
+    assert body["entries"][0]["score"] == 3
+    assert "Was disabled in the baseline and is enabled now" in body["entries"][0]["reasons"]
+
+
+def test_manual_to_auto_adds_a_single_point(client, monkeypatch):
+    current = [result_row(
+        source="Windows Service", name="Svc", location="SCM", sha256=None,
+        extra={"start_mode": "Auto", "state": "Running"},
+    )]
+    baseline = [baseline_row(
+        source="Windows Service", name="Svc", location="SCM", sha256=None,
+        start_setting="Manual",
+    )]
+
+    body = scan_against(client, monkeypatch, current, baseline)
+
+    assert body["entries"][0]["score"] == 1

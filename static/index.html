@@ -336,10 +336,13 @@
         if (data.baseline_saved_at) {
           const savedDate = new Date(data.baseline_saved_at).toLocaleString();
           const d = data.diff;
+          const replaced = d.binary_changed.filter(c => !c.routine).length;
           baselineInfo.textContent =
             `Compared against baseline saved ${savedDate}: ` +
             `${d.new.length} new, ${d.removed.length} removed, ${d.modified.length} modified, ` +
+            `${replaced} program files replaced, ${d.settings_changed.length} start settings changed, ` +
             `${d.unchanged_count} unchanged` +
+            (d.updated_routine_count > 0 ? ` (${d.updated_routine_count} updated normally)` : '') +
             (d.rotated_count > 0 ? ` (plus ${d.rotated_count} whose ID changed by itself)` : '') + `.`;
           if (d.removed.length > 0) {
             removedList.innerHTML = d.removed
@@ -355,32 +358,40 @@
           baselineInfo.textContent = 'No baseline saved yet — click "Save Current State as Baseline" to start tracking changes over time.';
         }
 
-        const newKeys = new Set(
-          (data.diff?.new || []).map(e => `${e.source}|${e.name}|${e.location}`)
-        );
+        const keyOf = e => `${e.source}|${e.name}|${e.location}`;
+        const newKeys = new Set((data.diff?.new || []).map(keyOf));
         const modifiedMap = new Map(
-          (data.diff?.modified || []).map(m =>
-            [`${m.entry.source}|${m.entry.name}|${m.entry.location}`, m.previous_command]
-          )
+          (data.diff?.modified || []).map(m => [keyOf(m.entry), m.previous_command])
         );
+        // Changes other than the command: a replaced program file or a different start setting.
+        const changeNotes = new Map();
+        for (const c of (data.diff?.binary_changed || [])) {
+          if (!c.routine) changeNotes.set(keyOf(c.entry), 'program file replaced');
+        }
+        for (const c of (data.diff?.settings_changed || [])) {
+          changeNotes.set(keyOf(c.entry), `start setting: ${c.previous} → ${c.current}`);
+        }
         for (const entry of data.entries) {
           const row = document.createElement('tr');
-          const entryKey = `${entry.source}|${entry.name}|${entry.location}`;
+          const entryKey = keyOf(entry);
           const isNew = newKeys.has(entryKey);
           const previousCommand = modifiedMap.get(entryKey);
+          const changeNote = changeNotes.get(entryKey);
+          const isChanged = previousCommand !== undefined || changeNote !== undefined;
           if (isNew) row.className = 'diff-new';
-          else if (previousCommand !== undefined) row.className = 'diff-modified';
+          else if (isChanged) row.className = 'diff-modified';
           row.innerHTML = `
             <td class="score-cell ${scoreClass(entry.score)}">${entry.score}<div class="verify-note">${verificationNote(entry.checks.verification)}</div></td>
             <td>
                 ${isNew ? '<span class="diff-badge">NEW</span>' : ''}
-                ${previousCommand !== undefined ? '<span class="diff-badge-modified">CHANGED</span>' : ''}
+                ${isChanged ? '<span class="diff-badge-modified">CHANGED</span>' : ''}
             </td>
             <td>${escapeHtml(entry.source)}</td>
             <td>${escapeHtml(entry.name)}<div class="verify-note">${escapeHtml(startNote(entry))}</div></td>
             <td class="command">
                 ${escapeHtml(entry.command)}
                 ${previousCommand !== undefined ? `<br><span style="color:#888">was: ${escapeHtml(previousCommand)}</span>` : ''}
+                ${changeNote !== undefined ? `<br><span style="color:#888">${escapeHtml(changeNote)}</span>` : ''}
             </td>
             <td class="reasons">${escapeHtml(entry.reasons.join('; '))}</td>
             <td>${formatVirusTotal(entry.virustotal)}</td>
@@ -405,7 +416,7 @@
         const plural = lastFlaggedCount === 1 ? 'entry is' : 'entries are';
         if (!window.confirm(
           `${lastFlaggedCount} flagged ${plural} on the screen. Saving the baseline records ` +
-          `${lastFlaggedCount === 1 ? 'it' : 'them'} as normal, so they will stop showing up as changes. ` +
+          `${lastFlaggedCount === 1 ? 'it' : 'them'} as normal, so ${lastFlaggedCount === 1 ? 'it' : 'they'} will stop showing up as changes. ` +
           'Save anyway?'
         )) return;
         url += '?accept_flagged=true';

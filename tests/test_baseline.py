@@ -7,6 +7,7 @@ from winaudit.baseline import (
     diff,
     load_baseline,
     save_baseline,
+    start_setting,
 )
 
 
@@ -340,3 +341,232 @@ def test_diff_output_order_is_the_same_for_any_input_order():
 
     assert [e["name"] for e in first["new"]] == ["Alpha", "Beta", "Mid", "Zeta"]
     assert first == second
+
+
+# ---- what a baseline stores ---------------------------------------------
+
+def full_result(**overrides):
+    result = {
+        "source": "Windows Service", "name": "Svc", "location": "SCM",
+        "command": r"C:\Apps\svc.exe", "scope": "all users",
+        "score": 5, "reasons": ["some opinion"], "virustotal": {"found": True},
+        "checks": {"verification": "complete"},
+        "executable_path": r"C:\Apps\svc.exe", "sha256": "a" * 64,
+        "publisher": "CN=Vendor", "signature_status": "Valid",
+        "extra": {"start_mode": "Auto", "state": "Running"},
+    }
+    result.update(overrides)
+    return result
+
+
+def test_baseline_keeps_facts_not_opinions(tmp_path):
+    path = tmp_path / "baseline.json"
+
+    save_baseline([full_result()], path)
+    stored = load_baseline(path)["entries"][0]
+
+    assert stored == {
+        "source": "Windows Service", "name": "Svc", "location": "SCM",
+        "command": r"C:\Apps\svc.exe", "executable_path": r"C:\Apps\svc.exe",
+        "sha256": "a" * 64, "publisher": "CN=Vendor", "signature_status": "Valid",
+        "start_setting": "Auto",
+    }
+
+
+def test_scheduled_task_start_setting_is_enabled_or_disabled():
+    enabled = {"extra": {"action_type": "exec", "state": "Ready"}}
+    disabled = {"extra": {"action_type": "exec", "state": "Disabled"}}
+
+    assert start_setting(enabled) == "Enabled"
+    assert start_setting(disabled) == "Disabled"
+    assert start_setting({"extra": {}}) is None
+    assert start_setting({}) is None
+
+
+def test_saved_baseline_carries_a_version_and_a_checksum(tmp_path):
+    path = tmp_path / "baseline.json"
+
+    save_baseline([full_result()], path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+
+    assert raw["schema_version"] == 2
+    assert len(raw["entries_sha256"]) == 64
+
+
+def test_editing_a_saved_baseline_is_detected(tmp_path):
+    path = tmp_path / "baseline.json"
+    save_baseline([full_result()], path)
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["entries"][0]["command"] = r"C:\Temp\evil.exe"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="integrity check"):
+        load_baseline(path)
+
+
+def test_removing_the_checksum_is_detected(tmp_path):
+    path = tmp_path / "baseline.json"
+    save_baseline([full_result()], path)
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    del raw["entries_sha256"]
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="integrity check"):
+        load_baseline(path)
+
+
+def test_unknown_future_version_is_refused(tmp_path):
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps({"schema_version": 99, "saved_at": "x", "entries": []}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not supported"):
+        load_baseline(path)
+
+
+def test_baseline_from_an_older_version_still_loads(tmp_path):
+    path = tmp_path / "baseline.json"
+    old = {"saved_at": "2026-10-12T18:12:09", "entries": [
+        {"source": "Registry Run Key", "name": "A", "location": "L", "command": r"C:\a.exe", "score": 0},
+    ]}
+    path.write_text(json.dumps(old), encoding="utf-8")
+
+    loaded = load_baseline(path)
+
+    assert loaded["legacy"] is True
+    assert loaded["entries"][0]["name"] == "A"
+
+
+def test_replacing_a_baseline_archives_the_old_one(tmp_path):
+    path = tmp_path / "baseline.json"
+
+    save_baseline([full_result(name="First")], path)
+    save_baseline([full_result(name="Second")], path)
+
+    archived = list((tmp_path / "baseline_history").glob("baseline-*.json"))
+    assert len(archived) == 1
+    assert json.loads(archived[0].read_text(encoding="utf-8"))["entries"][0]["name"] == "First"
+    assert load_baseline(path)["entries"][0]["name"] == "Second"
+
+
+def test_first_save_creates_no_history(tmp_path):
+    save_baseline([full_result()], tmp_path / "baseline.json")
+
+    assert not (tmp_path / "baseline_history").exists()
+
+
+def test_only_the_last_few_baselines_are_kept(tmp_path):
+    path = tmp_path / "baseline.json"
+
+    for number in range(9):
+        save_baseline([full_result(name=f"Save{number}")], path)
+
+    archived = sorted((tmp_path / "baseline_history").glob("baseline-*.json"))
+    names = [json.loads(p.read_text(encoding="utf-8"))["entries"][0]["name"] for p in archived]
+    assert names == ["Save3", "Save4", "Save5", "Save6", "Save7"]
+
+
+# ---- program files swapped in place ---------------------------------------
+
+def stored(**overrides):
+    base = {
+        "source": "Registry Run Key", "name": "App", "location": "HKCU\\Run",
+        "command": r"C:\Apps\app.exe", "sha256": "a" * 64,
+        "publisher": "CN=Vendor", "signature_status": "Valid",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_ordinary_update_is_listed_as_routine_and_not_counted_as_a_change():
+    baseline = [stored()]
+    current = [stored(sha256="b" * 64)]
+
+    result = diff(current, baseline)
+
+    assert result["binary_changed"][0]["routine"] is True
+    assert result["updated_routine_count"] == 1
+    assert result["unchanged_count"] == 1
+
+
+def test_file_swapped_for_an_unsigned_one_is_not_routine():
+    baseline = [stored()]
+    current = [stored(sha256="b" * 64, signature_status="NotSigned", publisher=None)]
+
+    result = diff(current, baseline)
+
+    assert result["binary_changed"][0]["routine"] is False
+    assert result["updated_routine_count"] == 0
+    assert result["unchanged_count"] == 0
+
+
+def test_file_swapped_for_one_from_a_different_publisher_is_not_routine():
+    baseline = [stored()]
+    current = [stored(sha256="b" * 64, publisher="CN=Someone Else")]
+
+    assert diff(current, baseline)["binary_changed"][0]["routine"] is False
+
+
+def test_unchanged_file_is_not_reported():
+    result = diff([stored()], [stored()])
+
+    assert result["binary_changed"] == []
+    assert result["unchanged_count"] == 1
+
+
+@pytest.mark.parametrize("missing", ["current", "baseline"])
+def test_no_fingerprint_on_either_side_means_no_comparison(missing):
+    with_hash = stored()
+    without = stored(sha256=None)
+    current, baseline = ([without], [with_hash]) if missing == "current" else ([with_hash], [without])
+
+    assert diff(current, baseline)["binary_changed"] == []
+
+
+def test_a_changed_command_is_not_also_reported_as_a_changed_file():
+    baseline = [stored()]
+    current = [stored(command=r"C:\Other\app.exe", sha256="b" * 64)]
+
+    result = diff(current, baseline)
+
+    assert len(result["modified"]) == 1
+    assert result["binary_changed"] == []
+
+
+# ---- start settings -------------------------------------------------------
+
+def service(setting):
+    return {
+        "source": "Windows Service", "name": "Svc", "location": "SCM",
+        "command": r"C:\Apps\svc.exe", "start_setting": setting,
+    }
+
+
+def test_service_switched_back_on_is_reported():
+    result = diff([service("Auto")], [service("Disabled")])
+
+    assert result["settings_changed"][0]["previous"] == "Disabled"
+    assert result["settings_changed"][0]["current"] == "Auto"
+    assert result["unchanged_count"] == 0
+
+
+def test_current_results_are_compared_through_their_scanner_details():
+    current = [{
+        "source": "Windows Service", "name": "Svc", "location": "SCM",
+        "command": r"C:\Apps\svc.exe", "extra": {"start_mode": "Auto", "state": "Running"},
+    }]
+
+    result = diff(current, [service("Manual")])
+
+    assert result["settings_changed"][0]["current"] == "Auto"
+
+
+def test_same_setting_is_not_reported():
+    assert diff([service("Auto")], [service("Auto")])["settings_changed"] == []
+
+
+def test_missing_setting_on_either_side_is_not_a_change():
+    legacy = {k: v for k, v in service("Auto").items() if k != "start_setting"}
+
+    assert diff([service("Auto")], [legacy])["settings_changed"] == []
