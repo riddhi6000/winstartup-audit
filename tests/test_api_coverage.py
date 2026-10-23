@@ -203,3 +203,58 @@ def test_scanner_details_are_included_in_each_result(monkeypatch):
     results, _ = api.perform_scan()
 
     assert results[0]["extra"] == {"start_mode": "Disabled", "state": "Stopped"}
+
+
+# ---- saving a baseline while something is flagged ----------------------
+
+def flagged_result(name="Suspicious", score=5):
+    return {
+        "source": "Windows Service", "name": name, "command": r"C:\bad.exe",
+        "location": "SCM", "scope": "all users", "score": score, "reasons": ["x"],
+    }
+
+
+def patch_scan(monkeypatch, results):
+    monkeypatch.setattr(
+        api, "perform_scan",
+        lambda: (results, coverage_with(("Windows Service", "complete"))),
+    )
+
+
+def test_baseline_is_refused_while_something_is_flagged(client, monkeypatch):
+    patch_scan(monkeypatch, [flagged_result("AggregatorHost")])
+
+    response = client.post("/api/baseline/save", headers=HEADERS)
+
+    assert response.status_code == 409
+    assert "AggregatorHost" in response.json()["detail"]
+    assert "record them as normal" in response.json()["detail"]
+    assert client.saved == []
+
+
+def test_flagged_baseline_can_be_saved_when_explicitly_accepted(client, monkeypatch):
+    patch_scan(monkeypatch, [flagged_result("AggregatorHost")])
+
+    response = client.post("/api/baseline/save?accept_flagged=true", headers=HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["flagged_recorded"] == 1
+    assert len(client.saved) == 1
+
+
+def test_unflagged_baseline_needs_no_confirmation(client, monkeypatch):
+    patch_scan(monkeypatch, [flagged_result("Fine", score=0)])
+
+    response = client.post("/api/baseline/save", headers=HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["flagged_recorded"] == 0
+
+
+def test_refusal_message_lists_only_the_first_few_names(client, monkeypatch):
+    patch_scan(monkeypatch, [flagged_result(f"Bad{n}") for n in range(8)])
+
+    detail = client.post("/api/baseline/save", headers=HEADERS).json()["detail"]
+
+    assert "8 flagged entries" in detail
+    assert "and 3 more" in detail

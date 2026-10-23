@@ -1,11 +1,21 @@
 import json
 import os
 import tempfile
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 import re
 
 REQUIRED_ENTRY_FIELDS = ("source", "name", "location", "command")
+
+# Parts of a name or command that Windows and installers change on their own
+# without anything having been added or removed: identifiers, hashes, and
+# version numbers. They are masked only when comparing leftovers, see
+# _pair_rotated().
+GUID_PATTERN = re.compile(r"\{?[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\}?")
+HASH_SUFFIX_PATTERN = re.compile(r"_[0-9A-Fa-f]{32}$")
+VERSION_PATTERN = re.compile(r"\d+\.\d+\.\d+(?:\.\d+)?")
+PER_USER_SERVICE_SUFFIX = re.compile(r"_[0-9A-Fa-f]{4,8}$")
 
 
 def _validate_entries(entries: list[dict]) -> None:
@@ -145,8 +155,69 @@ def load_baseline(path: Path) -> dict | None:
 
     return data
 
+def _sort_key(entry: dict) -> tuple:
+    return (entry["source"], entry["name"], entry["location"])
+
+
+def _loose_name(entry: dict) -> str:
+    name = GUID_PATTERN.sub("<GUID>", entry["name"])
+    name = HASH_SUFFIX_PATTERN.sub("_<HASH>", name)
+    name = VERSION_PATTERN.sub("<VERSION>", name)
+
+    # Per-user services (CDPUserSvc_1c2d9a and the like) get a new random
+    # suffix every sign-in. They are all hosted by svchost, which is what
+    # keeps this from masking an ordinary service whose name merely ends in
+    # a few hexadecimal characters.
+    if entry["source"] == "Windows Service" and "svchost.exe" in entry["command"].lower():
+        name = PER_USER_SERVICE_SUFFIX.sub("_<ID>", name)
+
+    return name
+
+
+def _loose_command(entry: dict) -> str:
+    return GUID_PATTERN.sub("<GUID>", _normalize_command_for_comparison(entry["command"]))
+
+
+def _loose_key(entry: dict) -> tuple:
+    return (entry["source"], _loose_name(entry), entry["location"], _loose_command(entry))
+
+
+def _pair_rotated(new_entries: list[dict], removed_entries: list[dict]):
+    """Matches entries that "disappeared" with entries that "appeared" when
+    the only difference is an identifier Windows rotates by itself.
+
+    This runs only on the leftovers, after exact matching, so it can never
+    hide a changed command under an unchanged name. Matching is one-to-one:
+    two vanished entries explain at most two new ones, and a third stays
+    reported as new.
+    """
+    available = defaultdict(list)
+    for entry in removed_entries:
+        available[_loose_key(entry)].append(entry)
+
+    still_new = []
+    rotated = []
+    for entry in new_entries:
+        candidates = available.get(_loose_key(entry))
+        if candidates:
+            previous = candidates.pop(0)
+            rotated.append({
+                "source": entry["source"],
+                "name": entry["name"],
+                "previous_name": previous["name"],
+            })
+        else:
+            still_new.append(entry)
+
+    still_removed = [entry for group in available.values() for entry in group]
+    return still_new, sorted(still_removed, key=_sort_key), rotated
+
+
 def diff(current_entries: list[dict], baseline_entries: list[dict]) -> dict:
-    """Compare current entries against a saved baseline."""
+    """Compare current entries against a saved baseline.
+
+    The result lists are in a fixed order (by source and name), so the same
+    two inputs always give the same output."""
     _validate_entries(current_entries)
     _validate_entries(baseline_entries)
 
@@ -159,7 +230,7 @@ def diff(current_entries: list[dict], baseline_entries: list[dict]) -> dict:
 
     modified = []
 
-    for key in shared_keys:
+    for key in sorted(shared_keys):
         current_entry = current_by_key[key]
         baseline_entry = baseline_by_key[key]
 
@@ -176,9 +247,15 @@ def diff(current_entries: list[dict], baseline_entries: list[dict]) -> dict:
                 "previous_command": baseline_entry["command"],
             })
 
+    new_entries = sorted((current_by_key[k] for k in new_keys), key=_sort_key)
+    removed_entries = sorted((baseline_by_key[k] for k in removed_keys), key=_sort_key)
+    new_entries, removed_entries, rotated = _pair_rotated(new_entries, removed_entries)
+
     return {
-        "new": [current_by_key[k] for k in new_keys],
-        "removed": [baseline_by_key[k] for k in removed_keys],
+        "new": new_entries,
+        "removed": removed_entries,
         "modified": modified,
+        "rotated": rotated,
+        "rotated_count": len(rotated),
         "unchanged_count": len(shared_keys) - len(modified),
     }

@@ -360,7 +360,7 @@ def run_scan():
 
 
 @app.post("/api/baseline/save", dependencies=[Depends(require_local_client)])
-def save_current_as_baseline():
+def save_current_as_baseline(accept_flagged: bool = False):
     results, coverage_summary = _perform_scan_exclusively()
 
     failed = [
@@ -376,6 +376,22 @@ def save_current_as_baseline():
             detail=(
                 "Baseline not saved: these scanners failed: "
                 f"{', '.join(failed)}. See the coverage details on the dashboard."
+            ),
+        )
+
+    # Whatever is in the baseline is treated as normal from then on, so
+    # saving while something is flagged would hide it. The caller must say
+    # so explicitly.
+    flagged = [result for result in results if result["score"] > 0]
+    if flagged and not accept_flagged:
+        shown = ", ".join(result["name"] for result in flagged[:5])
+        more = f" and {len(flagged) - 5} more" if len(flagged) > 5 else ""
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Baseline not saved: {len(flagged)} flagged "
+                f"{'entry' if len(flagged) == 1 else 'entries'} ({shown}{more}). "
+                "Saving would record them as normal. Review them first."
             ),
         )
 
@@ -397,4 +413,5 @@ def save_current_as_baseline():
         "saved": True,
         "entry_count": len(results),
         "incomplete_scanners": incomplete,
+        "flagged_recorded": len(flagged),
     }

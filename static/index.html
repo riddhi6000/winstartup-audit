@@ -225,6 +225,7 @@
     const removedSection = document.getElementById('removedSection');
     const removedList = document.getElementById('removedList');
     const coverageBox = document.getElementById('coverage');
+    let lastFlaggedCount = 0;
     const apiToken = document.querySelector('meta[name="winaudit-token"]').content;
 
     async function apiFetch(url, options = {}) {
@@ -331,13 +332,15 @@
         summary.textContent =
           `${data.total_entries} autostart entries found — ${data.flagged_count} flagged for review.`;
         renderCoverage(data.coverage, data.diff_skipped_sources || []);
+        lastFlaggedCount = data.flagged_count;
         if (data.baseline_saved_at) {
           const savedDate = new Date(data.baseline_saved_at).toLocaleString();
           const d = data.diff;
           baselineInfo.textContent =
             `Compared against baseline saved ${savedDate}: ` +
             `${d.new.length} new, ${d.removed.length} removed, ${d.modified.length} modified, ` +
-            `${d.unchanged_count} unchanged.`;
+            `${d.unchanged_count} unchanged` +
+            (d.rotated_count > 0 ? ` (plus ${d.rotated_count} whose ID changed by itself)` : '') + `.`;
           if (d.removed.length > 0) {
             removedList.innerHTML = d.removed
               .map(e => `<li>${escapeHtml(e.source)}: ${escapeHtml(e.name)} — <span class="command">${escapeHtml(e.command)}</span></li>`)
@@ -397,10 +400,21 @@
     btn.addEventListener('click', runScan);
 
     saveBaselineBtn.addEventListener('click', async () => {
+      let url = '/api/baseline/save';
+      if (lastFlaggedCount > 0) {
+        const plural = lastFlaggedCount === 1 ? 'entry is' : 'entries are';
+        if (!window.confirm(
+          `${lastFlaggedCount} flagged ${plural} on the screen. Saving the baseline records ` +
+          `${lastFlaggedCount === 1 ? 'it' : 'them'} as normal, so they will stop showing up as changes. ` +
+          'Save anyway?'
+        )) return;
+        url += '?accept_flagged=true';
+      }
+
       saveBaselineBtn.disabled = true;
       saveBaselineBtn.textContent = 'Saving...';
       try {
-        const data = await apiFetch('/api/baseline/save', { method: 'POST' });
+        const data = await apiFetch(url, { method: 'POST' });
         const note = data.incomplete_scanners.length > 0
           ? ` Incomplete scanners: ${data.incomplete_scanners.join(', ')}.`
           : '';
