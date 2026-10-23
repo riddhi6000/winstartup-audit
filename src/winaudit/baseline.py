@@ -22,6 +22,14 @@ SCHEMA_VERSION = 2
 SAVED_FIELDS = (
     "source", "name", "location", "command",
     "executable_path", "sha256", "publisher", "signature_status",
+    "payload_path", "payload_sha256", "payload_publisher", "payload_signature_status",
+)
+
+# The two files an entry can depend on: the program it starts, and the file
+# that program loads. (label, fingerprint field, publisher field, signature field)
+TRACKED_FILES = (
+    ("program file", "sha256", "publisher", "signature_status"),
+    ("loaded file", "payload_sha256", "payload_publisher", "payload_signature_status"),
 )
 
 HISTORY_FOLDER_NAME = "baseline_history"
@@ -314,14 +322,17 @@ def _pair_rotated(new_entries: list[dict], removed_entries: list[dict]):
     return still_new, sorted(still_removed, key=_sort_key), rotated
 
 
-def _is_routine_update(current: dict, baseline: dict) -> bool:
-    """A program file that changed but is still validly signed by the same
-    publisher, as it was in the baseline: what an ordinary update looks like."""
+def _is_routine_update(
+    current: dict, baseline: dict,
+    publisher_field: str = "publisher", signature_field: str = "signature_status",
+) -> bool:
+    """A file that changed but is still validly signed by the same publisher,
+    as it was in the baseline: what an ordinary update looks like."""
     return (
-        current.get("signature_status") == "Valid"
-        and baseline.get("signature_status") == "Valid"
-        and bool(current.get("publisher"))
-        and current.get("publisher") == baseline.get("publisher")
+        current.get(signature_field) == "Valid"
+        and baseline.get(signature_field) == "Valid"
+        and bool(current.get(publisher_field))
+        and current.get(publisher_field) == baseline.get(publisher_field)
     )
 
 
@@ -370,17 +381,21 @@ def diff(current_entries: list[dict], baseline_entries: list[dict]) -> dict:
             })
             changed_keys.add(key)
         else:
-            current_hash = current_entry.get("sha256")
-            baseline_hash = baseline_entry.get("sha256")
-            if isinstance(current_hash, str) and isinstance(baseline_hash, str) and current_hash != baseline_hash:
-                routine = _is_routine_update(current_entry, baseline_entry)
-                binary_changed.append({
-                    "entry": current_entry,
-                    "previous_sha256": baseline_hash,
-                    "routine": routine,
-                })
-                if not routine:
-                    changed_keys.add(key)
+            for label, hash_field, publisher_field, signature_field in TRACKED_FILES:
+                current_hash = current_entry.get(hash_field)
+                baseline_hash = baseline_entry.get(hash_field)
+                if isinstance(current_hash, str) and isinstance(baseline_hash, str) and current_hash != baseline_hash:
+                    routine = _is_routine_update(
+                        current_entry, baseline_entry, publisher_field, signature_field
+                    )
+                    binary_changed.append({
+                        "entry": current_entry,
+                        "file": label,
+                        "previous_sha256": baseline_hash,
+                        "routine": routine,
+                    })
+                    if not routine:
+                        changed_keys.add(key)
 
         current_setting = _setting_of(current_entry)
         baseline_setting = _setting_of(baseline_entry)

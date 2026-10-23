@@ -92,6 +92,7 @@ def test_every_result_records_which_checks_happened(monkeypatch):
         "signature": "not_applicable",
         "virustotal": "not_queried",
         "verification": "none",
+        "payload": "not_applicable",
     }
     assert summary["entries"]["total"] == 1
     assert summary["entries"]["executable"]["unexpanded"] == 1

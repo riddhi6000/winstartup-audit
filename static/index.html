@@ -253,6 +253,8 @@
         `<div>Verification: ${e.verification.complete} fully verified, ` +
           `${e.verification.partial} partly verified (inconclusive signature, or run through ` +
           `a host program such as svchost or rundll32), ${e.verification.none} not verified.</div>`,
+        `<div>Files loaded by host programs (DLLs, scripts): ${e.payload.found} found, ` +
+          `${e.payload.missing} missing, ${e.payload.unexpanded + e.payload.unresolved} not resolved.</div>`,
         `<div>Executables: ${e.executable.found} found, ` +
           `${e.executable.unexpanded} with unexpanded variables, ` +
           `${e.executable.missing} not found, ${e.executable.no_path} without a path.</div>`,
@@ -366,7 +368,7 @@
         // Changes other than the command: a replaced program file or a different start setting.
         const changeNotes = new Map();
         for (const c of (data.diff?.binary_changed || [])) {
-          if (!c.routine) changeNotes.set(keyOf(c.entry), 'program file replaced');
+          if (!c.routine) changeNotes.set(keyOf(c.entry), `${c.file} replaced`);
         }
         for (const c of (data.diff?.settings_changed || [])) {
           changeNotes.set(keyOf(c.entry), `start setting: ${c.previous} → ${c.current}`);
@@ -392,6 +394,7 @@
                 ${escapeHtml(entry.command)}
                 ${previousCommand !== undefined ? `<br><span style="color:#888">was: ${escapeHtml(previousCommand)}</span>` : ''}
                 ${changeNote !== undefined ? `<br><span style="color:#888">${escapeHtml(changeNote)}</span>` : ''}
+                ${entry.payload_path ? `<br><span style="color:#888">loads: ${escapeHtml(entry.payload_path)}${entry.payload_state === 'found' ? '' : ' (' + escapeHtml(entry.payload_state) + ')'}</span>` : ''}
             </td>
             <td class="reasons">${escapeHtml(entry.reasons.join('; '))}</td>
             <td>${formatVirusTotal(entry.virustotal)}</td>

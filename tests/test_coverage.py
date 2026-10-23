@@ -42,6 +42,7 @@ def test_classify_result_combines_the_checks():
         "signature": "checked",
         "virustotal": "checked",
         "verification": "complete",
+        "payload": "not_applicable",
     }
 
 
@@ -53,6 +54,7 @@ def test_classify_result_for_a_file_that_was_never_examined():
         "signature": "not_applicable",
         "virustotal": "not_queried",
         "verification": "none",
+        "payload": "not_applicable",
     }
 
 
@@ -83,9 +85,9 @@ def test_build_coverage_counts_every_state_including_zeros():
     ]
     results = [
         {"checks": {"executable": "found", "signature": "checked", "virustotal": "checked",
-                    "verification": "complete"}},
+                    "verification": "complete", "payload": "found"}},
         {"checks": {"executable": "unexpanded", "signature": "not_applicable", "virustotal": "not_queried",
-                    "verification": "none"}},
+                    "verification": "none", "payload": "not_applicable"}},
     ]
 
     summary = coverage.build_coverage(reports, results)
@@ -101,9 +103,46 @@ def test_build_coverage_counts_every_state_including_zeros():
     assert summary["entries"]["signature"]["inconclusive"] == 0
     assert summary["entries"]["virustotal"]["error"] == 0
     assert summary["entries"]["verification"] == {"complete": 1, "partial": 0, "none": 1}
+    assert summary["entries"]["payload"] == {
+        "found": 1, "missing": 0, "unexpanded": 0, "unresolved": 0, "not_applicable": 1,
+    }
 
 
 def test_build_coverage_is_complete_when_every_scanner_is():
     reports = [ScanReport(scanner="Registry Run Key")]
 
     assert coverage.build_coverage(reports, [])["complete"] is True
+
+
+HOST = r"C:\Windows\System32\rundll32.exe"
+
+
+def host_result(**overrides):
+    result = {
+        "signature_status": "Valid", "executable_path": HOST,
+        "payload_kind": "DLL", "payload_state": "found",
+        "payload_signature_status": "Valid",
+    }
+    result.update(overrides)
+    return result
+
+
+def test_host_program_is_complete_once_the_dll_it_loads_has_been_checked():
+    assert coverage.classify_result(host_result(), "found")["verification"] == "complete"
+
+
+@pytest.mark.parametrize("overrides", [
+    {"payload_state": "missing"},
+    {"payload_state": "unresolved"},
+    {"payload_state": None, "payload_kind": None},
+    {"payload_signature_status": "UnknownError"},
+    {"payload_signature_status": None},
+    {"payload_kind": "script"},
+])
+def test_host_program_stays_partial_when_what_it_loads_was_not_fully_checked(overrides):
+    assert coverage.classify_result(host_result(**overrides), "found")["verification"] == "partial"
+
+
+def test_payload_state_is_recorded_in_the_checks():
+    assert coverage.classify_result(host_result(), "found")["payload"] == "found"
+    assert coverage.classify_result(host_result(payload_state="missing"), "found")["payload"] == "missing"

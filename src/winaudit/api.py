@@ -10,8 +10,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
-from .scanners import registry_run, startup_folder, scheduled_tasks, services, winlogon, ScanReport
-from . import coverage, hash_cache, lookup_policy, risk, signature, virustotal
+from .scanners import registry_run, startup_folder, scheduled_tasks, services, winlogon, ScanReport, AutostartEntry
+from . import coverage, hash_cache, lookup_policy, payload, risk, signature, virustotal
 from .baseline import save_baseline, load_baseline, diff as diff_entries
 from datetime import datetime, timedelta
 
@@ -136,6 +136,35 @@ def add_reason(result: dict, points: int, reason: str) -> None:
     result["reasons"].append(reason)
 
 
+PAYLOAD_LABELS = {"DLL": "Loaded DLL", "service DLL": "Service DLL", "script": "Script"}
+
+
+def _assess_payload(entry, found: payload.Payload, sig_checker) -> tuple[int, list[str]]:
+    """Scores the file that a host program loads with the same rules as any
+    other program. A script is not signature-checked: scripts are rarely
+    signed, so that would only add noise."""
+    stand_in = AutostartEntry(
+        source=entry.source, name="", command=f'"{found.path}"',
+        location=entry.location, scope=entry.scope,
+    )
+    checker = sig_checker if found.kind != "script" else None
+    assessment = risk.assess(stand_in, signature_checker=checker)
+    score = assessment.score
+    reasons = [reason for reason in assessment.reasons if reason != risk.NO_FLAGS_REASON]
+
+    # When the file's path is written in the entry's own command, the
+    # entry has already been judged on that path (Temp folder and so on).
+    # Only what the signature adds is new, so everything else is dropped
+    # rather than counted twice.
+    if found.path.lower() in risk.expand_variables(entry.command).lower():
+        already_judged = risk.assess(stand_in, signature_checker=None)
+        score -= already_judged.score
+        reasons = [reason for reason in reasons if reason not in already_judged.reasons]
+
+    label = f"{PAYLOAD_LABELS[found.kind]} ({os.path.basename(found.path.replace(chr(92), '/'))})"
+    return score, [f"{label}: {reason}" for reason in reasons]
+
+
 def _run_scanner(scanner) -> ScanReport:
     """Runs one scanner so that a crash inside it costs only that scanner's
     results, and is reported as a failure instead of aborting the scan."""
@@ -171,13 +200,27 @@ def perform_scan() -> tuple[list[dict], dict]:
         resolved.path for resolved in resolved_entries if resolved.state == "found"
     }
 
-    signature_results = signature.batch_check(list(exe_paths))
+    # The file a host program (rundll32, svchost, a script interpreter) will
+    # actually load or run, when it can be identified.
+    payloads = [
+        payload.find_payload(entry.name, entry.source, entry.command)
+        for entry in all_entries
+    ]
+    payload_files = {
+        found.path for found in payloads if found is not None and found.state == "found"
+    }
+    signable_payloads = {
+        found.path for found in payloads
+        if found is not None and found.state == "found" and found.kind != "script"
+    }
+
+    signature_results = signature.batch_check(list(exe_paths | signable_payloads))
 
     # A fingerprint of each program file, so a later scan can tell whether the
     # file behind an unchanged path was swapped for different contents. Each
     # distinct file is read once however many entries point to it.
     file_hashes = {}
-    for path in exe_paths:
+    for path in exe_paths | payload_files:
         try:
             file_hashes[path] = hash_cache.compute_sha256(path)
         except OSError:
@@ -195,8 +238,20 @@ def perform_scan() -> tuple[list[dict], dict]:
         )
 
     results = []
-    for entry, resolved in zip(all_entries, resolved_entries):
+    for entry, resolved, found_payload in zip(all_entries, resolved_entries, payloads):
         assessment = risk.assess(entry, signature_checker=sig_checker)
+        score = assessment.score
+        reasons = list(assessment.reasons)
+
+        if found_payload is not None and found_payload.state == "found":
+            payload_score, payload_reasons = _assess_payload(entry, found_payload, sig_checker)
+            if payload_reasons:
+                score += payload_score
+                reasons = [reason for reason in reasons if reason != risk.NO_FLAGS_REASON]
+                reasons.extend(payload_reasons)
+
+        payload_path = found_payload.path if found_payload is not None else None
+        payload_signature = signature_results.get(payload_path, {}) if payload_path else {}
         exe_path = resolved.path if resolved.state == "found" else None
         publisher = signature_results.get(exe_path, {}).get("publisher") if exe_path else None
 
@@ -209,9 +264,15 @@ def perform_scan() -> tuple[list[dict], dict]:
             "created": entry.created.isoformat() if entry.created else None,
             "executable_path": exe_path,
             "sha256": file_hashes.get(exe_path) if exe_path else None,
+            "payload_kind": found_payload.kind if found_payload is not None else None,
+            "payload_path": payload_path,
+            "payload_state": found_payload.state if found_payload is not None else None,
+            "payload_sha256": file_hashes.get(payload_path) if payload_path else None,
+            "payload_publisher": payload_signature.get("publisher"),
+            "payload_signature_status": payload_signature.get("status"),
             "extra": entry.extra,
-            "score": assessment.score,
-            "reasons": assessment.reasons,
+            "score": score,
+            "reasons": reasons,
             "publisher": publisher,
             "signature_status": (
                 signature_results.get(exe_path, {}).get("status")
@@ -242,7 +303,7 @@ def perform_scan() -> tuple[list[dict], dict]:
     for _rank, _score, _name, result in candidates:
         try:
             vt_result = virustotal.check_file(
-                result["executable_path"], allow_network=requests_left > 0
+                lookup_policy.subject(result)["path"], allow_network=requests_left > 0
             )
         except OSError as exc:
             vt_result = {"error": f"File could not be read ({exc.strerror or exc})"}
@@ -292,7 +353,7 @@ def perform_scan() -> tuple[list[dict], dict]:
             "error" not in vt_result
             and not vt_result.get("deferred")
             and not vt_result.get("found")
-            and result["signature_status"] != "Valid"
+            and lookup_policy.subject(result)["signature_status"] != "Valid"
         ):
             add_reason(
                 result,
@@ -373,8 +434,8 @@ def run_scan():
             if result is not None:
                 add_reason(
                     result, 4,
-                    "Program file was replaced since the baseline, and it is no longer "
-                    "validly signed by the same publisher",
+                    f"{change['file'].capitalize()} was replaced since the baseline, and it is no "
+                    "longer validly signed by the same publisher",
                 )
 
         for change in diff_result["settings_changed"]:

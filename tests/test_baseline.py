@@ -570,3 +570,57 @@ def test_missing_setting_on_either_side_is_not_a_change():
     legacy = {k: v for k, v in service("Auto").items() if k != "start_setting"}
 
     assert diff([service("Auto")], [legacy])["settings_changed"] == []
+
+
+# ---- the file a host program loads -------------------------------------------
+
+def hosted(**overrides):
+    base = {
+        "source": "Scheduled Task", "name": "Job", "location": "Task Scheduler",
+        "command": r"C:\Windows\System32\rundll32.exe C:\Apps\x.dll,Run",
+        "sha256": "a" * 64, "publisher": "CN=Microsoft", "signature_status": "Valid",
+        "payload_sha256": "1" * 64, "payload_publisher": "CN=Vendor",
+        "payload_signature_status": "Valid",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_baseline_remembers_the_loaded_file(tmp_path):
+    path = tmp_path / "baseline.json"
+
+    save_baseline([hosted(payload_path=r"C:\Apps\x.dll", score=3)], path)
+    stored = load_baseline(path)["entries"][0]
+
+    assert stored["payload_path"] == r"C:\Apps\x.dll"
+    assert stored["payload_sha256"] == "1" * 64
+    assert stored["payload_signature_status"] == "Valid"
+    assert "score" not in stored
+
+
+def test_a_swapped_dll_behind_an_unchanged_host_is_reported():
+    current = [hosted(payload_sha256="2" * 64, payload_signature_status="NotSigned", payload_publisher=None)]
+
+    result = diff(current, [hosted()])
+
+    assert len(result["binary_changed"]) == 1
+    change = result["binary_changed"][0]
+    assert change["file"] == "loaded file"
+    assert change["routine"] is False
+    assert result["unchanged_count"] == 0
+
+
+def test_an_ordinary_update_of_the_loaded_file_is_routine():
+    result = diff([hosted(payload_sha256="2" * 64)], [hosted()])
+
+    assert result["binary_changed"][0]["file"] == "loaded file"
+    assert result["binary_changed"][0]["routine"] is True
+    assert result["unchanged_count"] == 1
+
+
+def test_both_files_changing_is_reported_for_each():
+    current = [hosted(sha256="9" * 64, payload_sha256="2" * 64)]
+
+    result = diff(current, [hosted()])
+
+    assert sorted(change["file"] for change in result["binary_changed"]) == ["loaded file", "program file"]

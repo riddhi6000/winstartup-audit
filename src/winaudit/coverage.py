@@ -13,6 +13,7 @@ EXECUTABLE_STATES = ("found", "unexpanded", "missing", "no_path")
 SIGNATURE_STATES = ("checked", "inconclusive", "skipped", "not_applicable")
 VIRUSTOTAL_STATES = ("checked", "stale", "deferred", "error", "not_queried")
 VERIFICATION_STATES = ("complete", "partial", "none")
+PAYLOAD_STATES = ("found", "missing", "unexpanded", "unresolved", "not_applicable")
 
 # Programs whose job is to start other code (a DLL, a script, a group of
 # services). Their own signature says nothing about what they load, so an
@@ -68,18 +69,29 @@ def virustotal_state(vt_result: dict | None) -> str:
 def verification_state(result: dict, executable: str, signature: str) -> str:
     """How much of what this entry runs has actually been examined.
 
-    complete -- the file it starts was found and its signature checked
+    complete -- the file it starts was found and its signature checked; for a
+                host program (svchost, rundll32, ...) the DLL it loads was
+                found and its signature checked too
     partial  -- the file was found, but its signature was inconclusive or
-                skipped, or it only hosts other code (svchost, rundll32, ...)
+                skipped, or it hosts other code that could not be examined
+                (a script, a DLL that could not be found or identified)
     none     -- no file could be examined
     """
     if executable != "found":
         return "none"
+    if signature != "checked":
+        return "partial"
 
     host = ntpath.basename(result.get("executable_path") or "").lower()
-    if signature != "checked" or host in HOST_PROGRAMS:
-        return "partial"
-    return "complete"
+    if host not in HOST_PROGRAMS:
+        return "complete"
+
+    loads_a_dll = (
+        result.get("payload_state") == "found"
+        and result.get("payload_kind") in ("DLL", "service DLL")
+        and result.get("payload_signature_status") in CONCLUSIVE_SIGNATURE_STATUSES
+    )
+    return "complete" if loads_a_dll else "partial"
 
 
 def classify_result(result: dict, executable: str) -> dict:
@@ -92,6 +104,7 @@ def classify_result(result: dict, executable: str) -> dict:
         "signature": signature,
         "virustotal": virustotal_state(result.get("virustotal")),
         "verification": verification_state(result, executable, signature),
+        "payload": result.get("payload_state") or "not_applicable",
     }
 
 
@@ -120,5 +133,6 @@ def build_coverage(reports: list[ScanReport], results: list[dict]) -> dict:
             "signature": _counts(results, "signature", SIGNATURE_STATES),
             "virustotal": _counts(results, "virustotal", VIRUSTOTAL_STATES),
             "verification": _counts(results, "verification", VERIFICATION_STATES),
+            "payload": _counts(results, "payload", PAYLOAD_STATES),
         },
     }
