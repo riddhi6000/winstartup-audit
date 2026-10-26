@@ -2,6 +2,7 @@ import csv
 import io
 import subprocess
 from . import AutostartEntry, ScanReport
+from .. import winenv
 
 SOURCE = "Windows Service"
 POWERSHELL_TIMEOUT_SECONDS = 120
@@ -13,6 +14,7 @@ REQUIRED_COLUMNS = ("Name", "PathName")
 # switch back on -- and a service that vanished from the list only because
 # it was disabled would otherwise look "removed" while its file is still there.
 PS_COMMAND = (
+    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
     "Get-CimInstance -ClassName Win32_Service | "
     "Select-Object Name, PathName, StartName, StartMode, State | "
     "ConvertTo-Csv -NoTypeInformation"
@@ -22,11 +24,16 @@ PS_COMMAND = (
 def scan() -> ScanReport:
     report = ScanReport(scanner=SOURCE, locations_total=1)
 
+    powershell = winenv.powershell_path()
+    if powershell is None:
+        return _failed(report, "The Windows folder could not be located (SystemRoot is not set)")
+
     try:
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", PS_COMMAND],
-            capture_output=True, text=True, check=True,
-            timeout=POWERSHELL_TIMEOUT_SECONDS,
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", PS_COMMAND],
+            capture_output=True, text=True,
+            encoding="utf-8-sig",  # services with non-English names or paths must not turn into garbage
+            check=True, timeout=POWERSHELL_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
         return _failed(report, f"PowerShell did not finish within {POWERSHELL_TIMEOUT_SECONDS} seconds")

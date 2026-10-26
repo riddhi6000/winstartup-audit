@@ -3,6 +3,8 @@ import json
 import os
 import subprocess
 
+from . import winenv
+
 
 # This script is constant. The file path is passed through the environment,
 # rather than interpolated into PowerShell source code.
@@ -66,13 +68,17 @@ def check_signature(exe_path: str, timeout: int = 15) -> dict:
     if timeout <= 0:
         return _inconclusive("InvalidTimeout")
 
+    powershell = winenv.powershell_path()
+    if powershell is None:
+        return _inconclusive("PowerShellNotFound")
+
     env = os.environ.copy()
     env["WINAUDIT_AUTHENTICODE_TARGET"] = exe_path
 
     try:
         result = subprocess.run(
             [
-                "powershell.exe",
+                powershell,
                 "-NoLogo",
                 "-NoProfile",
                 "-NonInteractive",

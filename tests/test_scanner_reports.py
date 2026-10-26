@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
@@ -13,6 +15,11 @@ from winaudit.scanners import (
     startup_folder,
     winlogon,
 )
+
+@pytest.fixture(autouse=True)
+def windows_folder(monkeypatch, tmp_path):
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+
 
 HKCU_RUN = registry_run.RUN_KEY_LOCATIONS[0][:2]
 HKLM_RUN = registry_run.RUN_KEY_LOCATIONS[2][:2]
@@ -82,7 +89,7 @@ def test_registry_reads_values_and_absent_keys_count_as_checked(monkeypatch):
 
     assert [entry.name for entry in report.entries] == ["One", "Two"]
     assert report.status == "complete"
-    assert report.locations_checked == report.locations_total == 5
+    assert report.locations_checked == report.locations_total == len(registry_run.RUN_KEY_LOCATIONS)
 
 
 def test_registry_access_denied_is_reported_not_swallowed(monkeypatch):
@@ -95,8 +102,8 @@ def test_registry_access_denied_is_reported_not_swallowed(monkeypatch):
 
     assert len(report.entries) == 1
     assert report.status == "partial"
-    assert report.locations_checked == 4
-    assert report.locations_total == 5
+    assert report.locations_total == len(registry_run.RUN_KEY_LOCATIONS)
+    assert report.locations_checked == report.locations_total - 1
     assert any("Access is denied" in error and "Run" in error for error in report.errors)
 
 
@@ -113,7 +120,7 @@ def test_registry_read_failure_midway_keeps_earlier_values(monkeypatch):
 
     assert [entry.name for entry in report.entries] == ["One"]
     assert report.status == "partial"
-    assert report.locations_checked == 4
+    assert report.locations_checked == report.locations_total - 1
     assert any("stopped early" in error for error in report.errors)
 
 
@@ -152,7 +159,7 @@ def test_startup_folder_lists_items_and_ignores_desktop_ini(monkeypatch, tmp_pat
     appdata = tmp_path / "appdata"
     folder = appdata / startup_folder.STARTUP_SUBPATH
     folder.mkdir(parents=True)
-    (folder / "app.lnk").write_text("x")
+    (folder / "app.exe").write_text("x")
     (folder / "desktop.ini").write_text("x")
 
     monkeypatch.setenv("APPDATA", str(appdata))
@@ -160,7 +167,7 @@ def test_startup_folder_lists_items_and_ignores_desktop_ini(monkeypatch, tmp_pat
 
     report = startup_folder.scan()
 
-    assert [entry.name for entry in report.entries] == ["app.lnk"]
+    assert [entry.name for entry in report.entries] == ["app.exe"]
     assert report.entries[0].created is not None
     assert report.status == "complete"
     assert report.locations_checked == 2

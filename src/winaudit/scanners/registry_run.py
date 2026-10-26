@@ -1,5 +1,6 @@
 import winreg
 from . import AutostartEntry, ScanReport
+from .. import startup_approved
 
 SOURCE = "Registry Run Key"
 
@@ -15,7 +16,25 @@ RUN_KEY_LOCATIONS = [
     (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\RunOnce", "all users"),
     (winreg.HKEY_LOCAL_MACHINE,
      r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run", "all users (32-bit)"),
+    # Added after the original five (their positions are relied on elsewhere).
+    (winreg.HKEY_LOCAL_MACHINE,
+     r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\RunOnce", "all users (32-bit)"),
+    # Group Policy can set programs to run at sign-in; software can also
+    # write here directly.
+    (winreg.HKEY_CURRENT_USER,
+     r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run", "current user (policy)"),
+    (winreg.HKEY_LOCAL_MACHINE,
+     r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run", "all users (policy)"),
 ]
+
+# Which StartupApproved record Task Manager keeps for each key, if any.
+_RUN = r"Software\Microsoft\Windows\CurrentVersion\Run"
+_RUN32 = r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"
+APPROVAL_KIND = {
+    (winreg.HKEY_CURRENT_USER, _RUN): "Run",
+    (winreg.HKEY_LOCAL_MACHINE, _RUN): "Run",
+    (winreg.HKEY_LOCAL_MACHINE, _RUN32): "Run32",
+}
 
 
 def scan() -> ScanReport:
@@ -64,12 +83,20 @@ def scan() -> ScanReport:
                     location_complete = False
                     continue
 
+                extra = {}
+                approval_kind = APPROVAL_KIND.get((hive, subkey))
+                if approval_kind:
+                    state = startup_approved.approval_state(approval_kind, name)
+                    if state:
+                        extra["start_mode"] = state  # "Disabled" when switched off in Task Manager
+
                 report.entries.append(AutostartEntry(
                     source=SOURCE,
                     name=name,
                     command=command,
                     location=location,
                     scope=scope,
+                    extra=extra,
                 ))
 
             if location_complete:

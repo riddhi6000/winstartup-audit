@@ -13,6 +13,12 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from winaudit import signature
 
 
+@pytest.fixture(autouse=True)
+def windows_folder(monkeypatch, tmp_path):
+    """The checker starts PowerShell from the Windows folder; give every test one."""
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+
+
 def powershell_result(payload, returncode=0):
     return subprocess.CompletedProcess(
         args=["powershell.exe"],
@@ -206,3 +212,31 @@ def test_non_object_json_is_inconclusive(monkeypatch):
 
     assert result["checked"] is False
     assert result["status"] == "InvalidOutput"
+
+
+def test_powershell_is_started_by_absolute_path(monkeypatch, tmp_path):
+    started = []
+
+    def fake_run(command, **kwargs):
+        started.append(command[0])
+        return powershell_result({"status": "Valid", "status_message": "", "subject": "CN=X"})
+
+    monkeypatch.setattr(signature.subprocess, "run", fake_run)
+
+    signature.check_signature(r"C:\Apps\app.exe")
+
+    assert started[0].startswith(str(tmp_path))
+    assert started[0].endswith("powershell.exe")
+
+
+def test_missing_windows_folder_is_inconclusive_and_launches_nothing(monkeypatch):
+    monkeypatch.delenv("SystemRoot", raising=False)
+    monkeypatch.delenv("windir", raising=False)
+    run_mock = Mock()
+    monkeypatch.setattr(signature.subprocess, "run", run_mock)
+
+    result = signature.check_signature(r"C:\Apps\app.exe")
+
+    assert result["checked"] is False
+    assert result["status"] == "PowerShellNotFound"
+    run_mock.assert_not_called()
