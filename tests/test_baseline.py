@@ -624,3 +624,50 @@ def test_both_files_changing_is_reported_for_each():
     result = diff(current, [hosted()])
 
     assert sorted(change["file"] for change in result["binary_changed"]) == ["loaded file", "program file"]
+
+
+# ---- version-numbered folders ---------------------------------------------------
+
+COPILOT_OLD = r'"C:\Program Files (x86)\Microsoft\Copilot\Application\155.0.4283.62\elevation_service.exe"'
+COPILOT_NEW = r'"C:\Program Files (x86)\Microsoft\Copilot\Application\156.0.4314.42\elevation_service.exe"'
+
+
+def test_an_update_into_a_new_version_folder_is_not_a_changed_command():
+    old = entry("Svc", COPILOT_OLD, source="Windows Service", location="SCM")
+    new = entry("Svc", COPILOT_NEW, source="Windows Service", location="SCM")
+
+    result = diff([new], [old])
+
+    assert result["modified"] == []
+    assert result["unchanged_count"] == 1
+
+
+def test_a_different_program_in_a_new_version_folder_is_still_a_changed_command():
+    old = entry("Svc", COPILOT_OLD, source="Windows Service", location="SCM")
+    new = entry("Svc", COPILOT_NEW.replace("elevation_service", "other"), source="Windows Service", location="SCM")
+
+    assert len(diff([new], [old])["modified"]) == 1
+
+
+def test_arguments_are_still_compared_when_the_version_folder_changes():
+    old = entry("Svc", COPILOT_OLD + " --channel=stable")
+    new = entry("Svc", COPILOT_NEW + " --channel=beta")
+
+    assert len(diff([new], [old])["modified"]) == 1
+
+
+def test_two_part_numbers_are_not_treated_as_versions():
+    old = entry("App", r"C:\Apps\1.2\app.exe")
+    new = entry("App", r"C:\Apps\1.3\app.exe")
+
+    assert len(diff([new], [old])["modified"]) == 1
+
+
+def test_a_swapped_file_behind_a_new_version_folder_is_still_caught_by_its_fingerprint():
+    old = stored(command=COPILOT_OLD)
+    new = stored(command=COPILOT_NEW, sha256="b" * 64, signature_status="NotSigned", publisher=None)
+
+    result = diff([new], [old])
+
+    assert result["modified"] == []
+    assert result["binary_changed"][0]["routine"] is False

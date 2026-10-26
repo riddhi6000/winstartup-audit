@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Windows Startup Audit</title>
   <meta name="winaudit-token" content="__WINAUDIT_TOKEN__">
   <style>
@@ -19,6 +20,22 @@
       font-size: 1.5rem;
       margin-bottom: 0.25rem;
     }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    button:focus-visible, input:focus-visible, select:focus-visible {
+      outline: 2px solid #67e8f9;
+      outline-offset: 2px;
+    }
+    .muted { color: #9a9a9a; }
     #summary {
       color: #9a9a9a;
       margin-bottom: 1rem;
@@ -39,7 +56,6 @@
       border-radius: 4px;
       font-size: 1rem;
       cursor: pointer;
-      margin-bottom: 0;
     }
     #scanBtn:disabled, #saveBaselineBtn:disabled {
       background: #555;
@@ -53,8 +69,12 @@
       border-radius: 4px;
       font-size: 1rem;
       cursor: pointer;
-      margin-bottom: 0;
-      margin-left: 0;
+    }
+    #scanStatus {
+      color: #b0b0b0;
+      font-size: 0.85rem;
+      margin-bottom: 0.75rem;
+      min-height: 1.2em;
     }
     #baselineInfo {
       color: #9a9a9a;
@@ -68,6 +88,7 @@
       margin-bottom: 1rem;
     }
     #coverage ul { margin: 0.25rem 0 0 1.1rem; padding: 0; }
+    .verify-note { color: #9a9a9a; font-size: 0.72rem; font-weight: normal; }
     .coverage-warning { color: #fbbf24; }
     .coverage-failed { color: #f87171; }
     .diff-new { background: rgba(248, 113, 113, 0.08); }
@@ -82,19 +103,6 @@
       border-radius: 3px;
       margin-right: 0.4rem;
     }
-    .verify-note { color: #888; font-size: 0.7rem; font-weight: normal; }
-    #removedSection {
-      margin-top: 1.5rem;
-      display: none;
-    }
-    #removedSection h2 {
-      font-size: 1.1rem;
-      color: #f87171;
-    }
-    #removedSection ul {
-      font-size: 0.85rem;
-      color: #c0c0c0;
-    }
     .diff-badge {
       display: inline-block;
       background: #f87171;
@@ -105,6 +113,40 @@
       border-radius: 3px;
       margin-right: 0.4rem;
     }
+    #removedSection {
+      margin-top: 1.5rem;
+      display: none;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+    #removedSection h2 {
+      font-size: 1.1rem;
+      color: #f87171;
+    }
+    #removedSection ul {
+      font-size: 0.85rem;
+      color: #c0c0c0;
+    }
+    #removedList li { margin-bottom: 0.35rem; overflow-wrap: anywhere; }
+    .filters {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem 1.25rem;
+      margin: 1rem 0 0.75rem;
+      font-size: 0.85rem;
+      color: #c0c0c0;
+    }
+    .filters label { display: inline-flex; align-items: center; gap: 0.4rem; }
+    .filters select, .filters input[type="search"] {
+      background: #2a2a2a;
+      color: #e0e0e0;
+      border: 1px solid #555;
+      border-radius: 4px;
+      padding: 0.3rem 0.45rem;
+      font-size: 0.85rem;
+    }
+    #shownCount { color: #9a9a9a; }
     .table-wrap {
       width: 100%;
       max-width: 100%;
@@ -119,12 +161,12 @@
       border-collapse: collapse;
       font-size: 0.78rem;
     }
-    #resultsTable th:nth-child(1), #resultsTable td:nth-child(1) { width: 4%; }
-    #resultsTable th:nth-child(2), #resultsTable td:nth-child(2) { width: 9%; }
+    #resultsTable th:nth-child(1), #resultsTable td:nth-child(1) { width: 6%; }
+    #resultsTable th:nth-child(2), #resultsTable td:nth-child(2) { width: 8%; }
     #resultsTable th:nth-child(3), #resultsTable td:nth-child(3) { width: 10%; }
     #resultsTable th:nth-child(4), #resultsTable td:nth-child(4) { width: 17%; }
     #resultsTable th:nth-child(5), #resultsTable td:nth-child(5) { width: 24%; }
-    #resultsTable th:nth-child(6), #resultsTable td:nth-child(6) { width: 27%; }
+    #resultsTable th:nth-child(6), #resultsTable td:nth-child(6) { width: 26%; }
     #resultsTable th:nth-child(7), #resultsTable td:nth-child(7) { width: 9%; }
     th, td {
       text-align: left;
@@ -142,6 +184,19 @@
       font-size: 0.7rem;
       letter-spacing: 0.02em;
     }
+    th .sort {
+      all: unset;
+      cursor: pointer;
+      text-transform: uppercase;
+      font-weight: 600;
+      font-size: 0.7rem;
+      letter-spacing: 0.02em;
+      color: #b0b0b0;
+    }
+    th .sort:hover { color: #e0e0e0; text-decoration: underline; }
+    th .sort:focus-visible { outline: 2px solid #67e8f9; outline-offset: 2px; }
+    th[aria-sort="descending"] .sort::after { content: " \25BC"; }
+    th[aria-sort="ascending"] .sort::after { content: " \25B2"; }
     .score-cell {
       font-weight: bold;
       text-align: center;
@@ -163,9 +218,11 @@
       color: #c0c0c0;
       overflow-wrap: anywhere;
     }
+    .vt-ok { color: #4ade80; }
+    .vt-warn { color: #fbbf24; }
+    .vt-bad { color: #f87171; }
     #resultsTable tbody tr:hover { filter: brightness(1.12); }
-    #removedSection { max-width: 100%; overflow-wrap: anywhere; }
-    #removedList li { margin-bottom: 0.35rem; overflow-wrap: anywhere; }
+    .empty-row td { color: #9a9a9a; text-align: center; padding: 1.2rem; }
     @media (max-width: 1000px) {
       body { padding: 0.75rem; }
       table { font-size: 0.72rem; }
@@ -173,7 +230,7 @@
       #resultsTable th:nth-child(3), #resultsTable td:nth-child(3) { width: 11%; }
       #resultsTable th:nth-child(4), #resultsTable td:nth-child(4) { width: 16%; }
       #resultsTable th:nth-child(5), #resultsTable td:nth-child(5) { width: 23%; }
-      #resultsTable th:nth-child(6), #resultsTable td:nth-child(6) { width: 29%; }
+      #resultsTable th:nth-child(6), #resultsTable td:nth-child(6) { width: 27%; }
       #resultsTable th:nth-child(7), #resultsTable td:nth-child(7) { width: 10%; }
     }
     @media (max-width: 650px) {
@@ -186,34 +243,56 @@
   </style>
 </head>
 <body>
-  <h1>Windows Startup Audit</h1>
-  <div id="summary">Click "Run Scan" to audit this machine's autostart locations.</div>
-  <div class="button-row">
-    <button id="scanBtn">Run Scan</button>
-    <button id="saveBaselineBtn">Save Current State as Baseline</button>
-  </div>
-  <div id="baselineInfo"></div>
-  <div id="coverage"></div>
-  <div id="removedSection">
-    <h2>Removed since baseline</h2>
-    <ul id="removedList"></ul>
-  </div>
-  <div class="table-wrap">
-  <table id="resultsTable" style="display:none">
-    <thead>
-      <tr>
-        <th title="Not a probability of malware. A higher number means more reasons to take a closer look.">Review score</th>
-        <th></th>
-        <th>Source</th>
-        <th>Name</th>
-        <th>Command / Path</th>
-        <th>Reasons</th>
-        <th>VirusTotal</th>
-      </tr>
-    </thead>
-    <tbody id="resultsBody"></tbody>
-  </table>
-  </div>
+  <main>
+    <h1>Windows Startup Audit</h1>
+    <div id="summary" role="status" aria-live="polite">Click "Run Scan" to audit this machine's autostart locations.</div>
+    <div class="button-row">
+      <button id="scanBtn">Run Scan</button>
+      <button id="saveBaselineBtn">Save Current State as Baseline</button>
+    </div>
+    <div id="scanStatus" role="status" aria-live="polite"></div>
+    <div id="baselineInfo" role="status" aria-live="polite"></div>
+    <div id="coverage"></div>
+    <div id="removedSection">
+      <h2>Removed since baseline</h2>
+      <ul id="removedList"></ul>
+    </div>
+
+    <div id="filters" class="filters" role="search" aria-label="Filter the results" style="display:none">
+      <label><input type="checkbox" id="attentionOnly" checked> Only flagged, new or changed</label>
+      <label>Source
+        <select id="sourceFilter"><option value="">All</option></select>
+      </label>
+      <label>Verification
+        <select id="verificationFilter">
+          <option value="">Any</option>
+          <option value="notfull">Not fully verified</option>
+        </select>
+      </label>
+      <label>Search <input type="search" id="searchBox" placeholder="name, command or file"></label>
+      <span id="shownCount" role="status" aria-live="polite"></span>
+    </div>
+
+    <div class="table-wrap">
+      <table id="resultsTable" style="display:none">
+        <caption class="sr-only">Autostart entries found on this machine, with a review score for each</caption>
+        <thead>
+          <tr>
+            <th scope="col" aria-sort="descending" title="Not a probability of malware. A higher number means more reasons to take a closer look.">
+              <button class="sort" type="button" data-key="score">Review score</button>
+            </th>
+            <th scope="col"><span class="sr-only">Status since baseline</span></th>
+            <th scope="col" aria-sort="none"><button class="sort" type="button" data-key="source">Source</button></th>
+            <th scope="col" aria-sort="none"><button class="sort" type="button" data-key="name">Name</button></th>
+            <th scope="col">Command / Path</th>
+            <th scope="col">Reasons</th>
+            <th scope="col">VirusTotal</th>
+          </tr>
+        </thead>
+        <tbody id="resultsBody"></tbody>
+      </table>
+    </div>
+  </main>
 
   <script nonce="__CSP_NONCE__">
     const btn = document.getElementById('scanBtn');
@@ -225,8 +304,21 @@
     const removedSection = document.getElementById('removedSection');
     const removedList = document.getElementById('removedList');
     const coverageBox = document.getElementById('coverage');
-    let lastFlaggedCount = 0;
+    const scanStatus = document.getElementById('scanStatus');
+    const filtersBar = document.getElementById('filters');
+    const attentionOnly = document.getElementById('attentionOnly');
+    const sourceFilter = document.getElementById('sourceFilter');
+    const verificationFilter = document.getElementById('verificationFilter');
+    const searchBox = document.getElementById('searchBox');
+    const shownCount = document.getElementById('shownCount');
+    const sortButtons = Array.from(document.querySelectorAll('th .sort'));
+
     const apiToken = document.querySelector('meta[name="winaudit-token"]').content;
+
+    let lastFlaggedCount = 0;
+    let rows = [];            // one record per entry from the last scan
+    let sortKey = 'score';
+    let sortDirection = 'descending';
 
     async function apiFetch(url, options = {}) {
       const response = await fetch(url, {
@@ -245,6 +337,12 @@
         throw new Error(detail);
       }
       return response.json();
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
     }
 
     function renderCoverage(coverage, skippedSources) {
@@ -289,12 +387,6 @@
       return 'score-high';
     }
 
-    function escapeHtml(str) {
-      const div = document.createElement('div');
-      div.textContent = str;
-      return div.innerHTML;
-    }
-
     function startNote(entry) {
       const extra = entry.extra || {};
       if (!extra.start_mode) return '';
@@ -310,23 +402,197 @@
     }
 
     function formatVirusTotal(vt) {
-      if (!vt) return '<span style="color:#666">—</span>';
-      if (vt.deferred) return '<span style="color:#888">queued for the next scan</span>';
-      if (vt.error) return `<span style="color:#888" title="${escapeHtml(vt.error)}">check failed</span>`;
-      if (!vt.found) return '<span style="color:#888" title="Not a safety verdict: VirusTotal has no record of this exact file">never seen by VirusTotal</span>';
-      const color = vt.malicious_count === 0 ? '#4ade80'
-        : vt.malicious_count / vt.total_engines >= 0.3 ? '#f87171'
-        : '#fbbf24';
+      if (!vt) return '<span class="muted">—</span>';
+      if (vt.deferred) return '<span class="muted">queued for the next scan</span>';
+      if (vt.error) return `<span class="muted" title="${escapeHtml(vt.error)}">check failed</span>`;
+      if (!vt.found) return '<span class="muted" title="Not a safety verdict: VirusTotal has no record of this exact file">never seen by VirusTotal</span>';
+      const cssClass = vt.malicious_count === 0 ? 'vt-ok'
+        : vt.malicious_count / vt.total_engines >= 0.3 ? 'vt-bad'
+        : 'vt-warn';
       const age = vt.stale ? ' (older result)' : '';
-      return `<span style="color:${color}">${vt.malicious_count}/${vt.total_engines} flagged${age}</span>`;    }
+      return `<span class="${cssClass}">${vt.malicious_count}/${vt.total_engines} flagged${age}</span>`;
+    }
+
+    // ---- turning a scan into rows ------------------------------------------
+
+    const keyOf = e => `${e.source}|${e.name}|${e.location}`;
+
+    function buildRows(data) {
+      const newKeys = new Set((data.diff?.new || []).map(keyOf));
+      const modifiedMap = new Map(
+        (data.diff?.modified || []).map(m => [keyOf(m.entry), m.previous_command])
+      );
+      // Changes other than the command: a replaced file or a different start setting.
+      const changeNotes = new Map();
+      for (const c of (data.diff?.binary_changed || [])) {
+        if (!c.routine) changeNotes.set(keyOf(c.entry), `${c.file} replaced`);
+      }
+      for (const c of (data.diff?.settings_changed || [])) {
+        changeNotes.set(keyOf(c.entry), `start setting: ${c.previous} → ${c.current}`);
+      }
+
+      return data.entries.map(entry => {
+        const key = keyOf(entry);
+        const previousCommand = modifiedMap.get(key);
+        const changeNote = changeNotes.get(key);
+        return {
+          entry,
+          isNew: newKeys.has(key),
+          previousCommand,
+          changeNote,
+          isChanged: previousCommand !== undefined || changeNote !== undefined,
+        };
+      });
+    }
+
+    // ---- filtering and sorting (pure, so they are easy to reason about) -----
+
+    function matchesFilters(row, filters) {
+      const entry = row.entry;
+      if (filters.attentionOnly && !(entry.score > 0 || row.isNew || row.isChanged)) return false;
+      if (filters.source && entry.source !== filters.source) return false;
+      if (filters.verification === 'notfull' && entry.checks.verification === 'complete') return false;
+      if (filters.search) {
+        const haystack = `${entry.name} ${entry.command} ${entry.payload_path || ''}`.toLowerCase();
+        if (!haystack.includes(filters.search.toLowerCase())) return false;
+      }
+      return true;
+    }
+
+    function sortRows(list, key, direction) {
+      const factor = direction === 'ascending' ? 1 : -1;
+      const text = (a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' });
+      return [...list].sort((a, b) => {
+        let result = 0;
+        if (key === 'score') result = a.entry.score - b.entry.score;
+        else if (key === 'source') result = text(a.entry.source, b.entry.source);
+        else result = text(a.entry.name, b.entry.name);
+        if (result === 0) result = text(a.entry.name, b.entry.name) * (key === 'score' ? -1 : 1);
+        return result * factor;
+      });
+    }
+
+    function currentFilters() {
+      return {
+        attentionOnly: attentionOnly.checked,
+        source: sourceFilter.value,
+        verification: verificationFilter.value,
+        search: searchBox.value.trim(),
+      };
+    }
+
+    function rowHtml(row) {
+      const { entry, isNew, isChanged, previousCommand, changeNote } = row;
+      return `
+        <td class="score-cell ${scoreClass(entry.score)}">${entry.score}<div class="verify-note">${verificationNote(entry.checks.verification)}</div></td>
+        <td>
+            ${isNew ? '<span class="diff-badge">NEW</span>' : ''}
+            ${isChanged ? '<span class="diff-badge-modified">CHANGED</span>' : ''}
+        </td>
+        <td>${escapeHtml(entry.source)}</td>
+        <td>${escapeHtml(entry.name)}<div class="verify-note">${escapeHtml(startNote(entry))}</div></td>
+        <td class="command">
+            ${escapeHtml(entry.command)}
+            ${previousCommand !== undefined ? `<br><span class="muted">was: ${escapeHtml(previousCommand)}</span>` : ''}
+            ${changeNote !== undefined ? `<br><span class="muted">${escapeHtml(changeNote)}</span>` : ''}
+            ${entry.payload_path ? `<br><span class="muted">loads: ${escapeHtml(entry.payload_path)}${entry.payload_state === 'found' ? '' : ' (' + escapeHtml(entry.payload_state) + ')'}</span>` : ''}
+        </td>
+        <td class="reasons">${escapeHtml(entry.reasons.join('; '))}</td>
+        <td>${formatVirusTotal(entry.virustotal)}</td>
+      `;
+    }
+
+    function renderTable() {
+      const filters = currentFilters();
+      const visible = sortRows(rows.filter(row => matchesFilters(row, filters)), sortKey, sortDirection);
+
+      tbody.innerHTML = '';
+      for (const row of visible) {
+        const tr = document.createElement('tr');
+        if (row.isNew) tr.className = 'diff-new';
+        else if (row.isChanged) tr.className = 'diff-modified';
+        tr.innerHTML = rowHtml(row);
+        tbody.appendChild(tr);
+      }
+
+      if (visible.length === 0) {
+        const tr = document.createElement('tr');
+        tr.className = 'empty-row';
+        tr.innerHTML = `<td colspan="7">${rows.length === 0
+          ? 'No entries.'
+          : 'No entries match these filters. Untick "Only flagged, new or changed" to see everything.'}</td>`;
+        tbody.appendChild(tr);
+      }
+
+      shownCount.textContent = `Showing ${visible.length} of ${rows.length} entries`;
+
+      for (const th of table.querySelectorAll('th[aria-sort]')) {
+        const button = th.querySelector('.sort');
+        th.setAttribute('aria-sort', button && button.dataset.key === sortKey ? sortDirection : 'none');
+      }
+    }
+
+    function fillSourceFilter() {
+      const previous = sourceFilter.value;
+      const sources = [...new Set(rows.map(row => row.entry.source))].sort();
+      sourceFilter.innerHTML = '<option value="">All</option>' +
+        sources.map(source => `<option value="${escapeHtml(source)}">${escapeHtml(source)}</option>`).join('');
+      sourceFilter.value = sources.includes(previous) ? previous : '';
+    }
+
+    for (const control of [attentionOnly, sourceFilter, verificationFilter]) {
+      control.addEventListener('change', renderTable);
+    }
+    searchBox.addEventListener('input', renderTable);
+
+    for (const button of sortButtons) {
+      button.addEventListener('click', () => {
+        const key = button.dataset.key;
+        if (key === sortKey) {
+          sortDirection = sortDirection === 'descending' ? 'ascending' : 'descending';
+        } else {
+          sortKey = key;
+          sortDirection = key === 'score' ? 'descending' : 'ascending';
+        }
+        renderTable();
+      });
+    }
+
+    // ---- scanning -------------------------------------------------------------
+
+    let scanTimer = null;
+
+    function startProgress() {
+      const startedAt = Date.now();
+      const update = () => {
+        const seconds = Math.floor((Date.now() - startedAt) / 1000);
+        const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+        scanStatus.textContent =
+          `Scanning… ${clock} elapsed. A scan usually takes a couple of minutes, ` +
+          'and longer the first time while new files are checked.';
+      };
+      update();
+      scanTimer = setInterval(update, 1000);
+    }
+
+    function stopProgress() {
+      clearInterval(scanTimer);
+      scanTimer = null;
+      scanStatus.textContent = '';
+    }
 
     async function runScan() {
       btn.disabled = true;
-      btn.textContent = 'Scanning... (this can take up to a minute)';
+      btn.textContent = 'Scanning…';
+      table.setAttribute('aria-busy', 'true');
       summary.textContent = '';
+      baselineInfo.textContent = '';
       coverageBox.innerHTML = '';
+      removedSection.style.display = 'none';
+      filtersBar.style.display = 'none';
       table.style.display = 'none';
       tbody.innerHTML = '';
+      startProgress();
 
       try {
         const data = await apiFetch('/api/scan');
@@ -335,6 +601,7 @@
           `${data.total_entries} autostart entries found — ${data.flagged_count} flagged for review.`;
         renderCoverage(data.coverage, data.diff_skipped_sources || []);
         lastFlaggedCount = data.flagged_count;
+
         if (data.baseline_saved_at) {
           const savedDate = new Date(data.baseline_saved_at).toLocaleString();
           const d = data.diff;
@@ -351,8 +618,6 @@
               .map(e => `<li>${escapeHtml(e.source)}: ${escapeHtml(e.name)} — <span class="command">${escapeHtml(e.command)}</span></li>`)
               .join('');
             removedSection.style.display = 'block';
-          } else {
-            removedSection.style.display = 'none';
           }
         } else if (data.baseline_error) {
           baselineInfo.textContent = `Baseline could not be used: ${data.baseline_error}`;
@@ -360,52 +625,16 @@
           baselineInfo.textContent = 'No baseline saved yet — click "Save Current State as Baseline" to start tracking changes over time.';
         }
 
-        const keyOf = e => `${e.source}|${e.name}|${e.location}`;
-        const newKeys = new Set((data.diff?.new || []).map(keyOf));
-        const modifiedMap = new Map(
-          (data.diff?.modified || []).map(m => [keyOf(m.entry), m.previous_command])
-        );
-        // Changes other than the command: a replaced program file or a different start setting.
-        const changeNotes = new Map();
-        for (const c of (data.diff?.binary_changed || [])) {
-          if (!c.routine) changeNotes.set(keyOf(c.entry), `${c.file} replaced`);
-        }
-        for (const c of (data.diff?.settings_changed || [])) {
-          changeNotes.set(keyOf(c.entry), `start setting: ${c.previous} → ${c.current}`);
-        }
-        for (const entry of data.entries) {
-          const row = document.createElement('tr');
-          const entryKey = keyOf(entry);
-          const isNew = newKeys.has(entryKey);
-          const previousCommand = modifiedMap.get(entryKey);
-          const changeNote = changeNotes.get(entryKey);
-          const isChanged = previousCommand !== undefined || changeNote !== undefined;
-          if (isNew) row.className = 'diff-new';
-          else if (isChanged) row.className = 'diff-modified';
-          row.innerHTML = `
-            <td class="score-cell ${scoreClass(entry.score)}">${entry.score}<div class="verify-note">${verificationNote(entry.checks.verification)}</div></td>
-            <td>
-                ${isNew ? '<span class="diff-badge">NEW</span>' : ''}
-                ${isChanged ? '<span class="diff-badge-modified">CHANGED</span>' : ''}
-            </td>
-            <td>${escapeHtml(entry.source)}</td>
-            <td>${escapeHtml(entry.name)}<div class="verify-note">${escapeHtml(startNote(entry))}</div></td>
-            <td class="command">
-                ${escapeHtml(entry.command)}
-                ${previousCommand !== undefined ? `<br><span style="color:#888">was: ${escapeHtml(previousCommand)}</span>` : ''}
-                ${changeNote !== undefined ? `<br><span style="color:#888">${escapeHtml(changeNote)}</span>` : ''}
-                ${entry.payload_path ? `<br><span style="color:#888">loads: ${escapeHtml(entry.payload_path)}${entry.payload_state === 'found' ? '' : ' (' + escapeHtml(entry.payload_state) + ')'}</span>` : ''}
-            </td>
-            <td class="reasons">${escapeHtml(entry.reasons.join('; '))}</td>
-            <td>${formatVirusTotal(entry.virustotal)}</td>
-          `;
-          tbody.appendChild(row);
-        }
-
+        rows = buildRows(data);
+        fillSourceFilter();
+        renderTable();
+        filtersBar.style.display = '';
         table.style.display = '';
       } catch (err) {
         summary.textContent = `Scan failed: ${err.message}`;
       } finally {
+        stopProgress();
+        table.removeAttribute('aria-busy');
         btn.disabled = false;
         btn.textContent = 'Run Scan';
       }
@@ -432,7 +661,8 @@
         const note = data.incomplete_scanners.length > 0
           ? ` Incomplete scanners: ${data.incomplete_scanners.join(', ')}.`
           : '';
-        baselineInfo.textContent = `Baseline saved — ${data.entry_count} entries recorded.${note}`;      } catch (err) {
+        baselineInfo.textContent = `Baseline saved — ${data.entry_count} entries recorded.${note}`;
+      } catch (err) {
         baselineInfo.textContent = `Failed to save baseline: ${err.message}`;
       } finally {
         saveBaselineBtn.disabled = false;

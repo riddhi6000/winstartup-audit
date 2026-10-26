@@ -90,8 +90,19 @@ def entry_key(entry: dict) -> tuple:
     return (entry["source"], entry["name"], entry["location"])
 
 
+# A folder named like a version number (156.0.4314.42), anywhere in a path.
+# Software installs each update into a new folder like this, so the path
+# changes on every update even though nothing about it has really changed.
+VERSION_FOLDER_PATTERN = re.compile(r"\\\d+(?:\.\d+){2,4}(?:-\d+)?(?=\\)")
+
+
 def _normalize_command_for_comparison(command: str) -> str:
-    """Normalize version folders for selected known software paths."""
+    """Mask version-numbered folders when comparing commands.
+
+    Hiding the version cannot hide a swapped program: when the masked
+    commands match, the program file's fingerprint is compared as well
+    (see diff), and a different file that is not validly signed by the same
+    publisher is reported there."""
     known_versioned_paths = (
         "\\Microsoft\\Edge\\Application\\",
         "\\Microsoft\\EdgeWebView\\Application\\",
@@ -115,7 +126,7 @@ def _normalize_command_for_comparison(command: str) -> str:
             flags=re.IGNORECASE,
         )
 
-    return normalized
+    return VERSION_FOLDER_PATTERN.sub(lambda match: "\\<VERSION>", normalized)
 
 def start_setting(entry: dict) -> str | None:
     """How an entry is set to start: a service's start type, or whether a
