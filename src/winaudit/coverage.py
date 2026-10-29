@@ -135,9 +135,10 @@ def _counts(results: list[dict], check: str, states: tuple[str, ...]) -> dict:
     return {state: counter.get(state, 0) for state in states}
 
 
-def build_coverage(reports: list[ScanReport], results: list[dict]) -> dict:
+def build_coverage(reports: list[ScanReport], results: list[dict], virustotal_enabled: bool = True) -> dict:
     return {
         "complete": all(report.status == "complete" for report in reports),
+        "virustotal_enabled": virustotal_enabled,
         "scanners": [
             {
                 "scanner": report.scanner,

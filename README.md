@@ -105,9 +105,14 @@ python -m uvicorn winaudit.api:app --app-dir src --reload
 ```
 
 Open <http://127.0.0.1:8000> and click **Run Scan**. The first scan can take a few minutes
-while new files are checked; later ones are much faster. Without an API key everything works
-except the VirusTotal lookups, which report that they could not run. For the most complete
+while new files are checked; later ones are much faster. Without an API key everything works except the VirusTotal lookups, which are switched off; the dashboard says so. For the most complete
 view, run from an elevated PowerShell; the coverage panel lists anything that could not be read.
+
+## Command line
+
+  python -m winaudit scan --json report.json     # scan and write a full report
+  python -m winaudit scan --redact --json sample.json   # remove user/computer names for sharing
+  python -m winaudit compare first.json second.json     # do two scans agree?
 
 ## Security of the tool itself
 

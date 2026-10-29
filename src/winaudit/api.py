@@ -293,7 +293,8 @@ def perform_scan() -> tuple[list[dict], dict]:
     # fit are marked "deferred" and are looked up by a later scan. Answers
     # already stored and still fresh cost nothing.
     candidates = []
-    for result in results:
+    virustotal_enabled = virustotal.is_configured()
+    for result in results if virustotal_enabled else []:
         rank = lookup_policy.priority(result)
         if rank is not None:
             candidates.append((rank, -result["score"], result["name"], result))
@@ -372,7 +373,7 @@ def perform_scan() -> tuple[list[dict], dict]:
         result["checks"] = coverage.classify_result(result, resolved.state)
 
     results.sort(key=lambda r: r["score"], reverse=True)
-    return results, coverage.build_coverage(reports, results)
+    return results, coverage.build_coverage(reports, results, virustotal_enabled=virustotal_enabled)
 
 
 @app.get("/api/scan", dependencies=[Depends(require_local_client)])

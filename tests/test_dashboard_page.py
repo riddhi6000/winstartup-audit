@@ -57,3 +57,8 @@ def test_page_has_no_colour_only_statuses():
     # statuses are always written out (NEW, CHANGED, "not verified", the score itself)
     for text in ("NEW", "CHANGED", "not verified", "partly verified"):
         assert text in PAGE
+
+
+def test_dashboard_explains_when_virustotal_is_switched_off():
+    assert "VirusTotal lookups are off" in PAGE
+    assert "coverage.virustotal_enabled === false" in PAGE

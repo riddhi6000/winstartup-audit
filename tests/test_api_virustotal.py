@@ -236,3 +236,40 @@ def test_a_garbled_virustotal_answer_costs_one_lookup_not_the_scan(monkeypatch):
     assert results[0]["virustotal"]["error"] == virustotal.UNREADABLE_ANSWER_ERROR
     assert results[0]["score"] == 2  # still scored on the evidence we do have
     assert summary["entries"]["virustotal"]["error"] == 1
+
+
+# ---- no API key ---------------------------------------------------------------------
+
+def test_without_a_key_no_lookups_are_made_and_the_scan_says_so(monkeypatch):
+    monkeypatch.delenv("VIRUSTOTAL_API_KEY", raising=False)
+    prepare(monkeypatch, {r"C:\Apps\unsigned.exe": ("NotSigned", None)})
+    looked_up = record_lookups(monkeypatch, clean_result)
+
+    results, summary = api.perform_scan()
+
+    assert looked_up == []
+    assert summary["virustotal_enabled"] is False
+    assert summary["entries"]["virustotal"]["error"] == 0
+    assert results[0]["virustotal"] is None
+    assert results[0]["score"] == 2  # still judged on everything else
+
+
+def test_with_a_key_lookups_are_made_as_before(monkeypatch):
+    prepare(monkeypatch, {r"C:\Apps\unsigned.exe": ("NotSigned", None)})
+    looked_up = record_lookups(monkeypatch, clean_result)
+
+    _, summary = api.perform_scan()
+
+    assert len(looked_up) == 1
+    assert summary["virustotal_enabled"] is True
+
+
+def test_is_configured_follows_the_environment(monkeypatch):
+    monkeypatch.setenv("VIRUSTOTAL_API_KEY", "abc")
+    assert virustotal.is_configured() is True
+
+    monkeypatch.setenv("VIRUSTOTAL_API_KEY", "")
+    assert virustotal.is_configured() is False
+
+    monkeypatch.delenv("VIRUSTOTAL_API_KEY")
+    assert virustotal.is_configured() is False

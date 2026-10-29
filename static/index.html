@@ -360,10 +360,14 @@
           `${e.executable.missing} not found, ${e.executable.no_path} without a path.</div>`,
         `<div>Signatures: ${e.signature.checked} of ${e.total} entries had a conclusive result ` +
           `(${e.signature.inconclusive} inconclusive, ${e.signature.skipped} skipped).</div>`,
-        `<div>VirusTotal: ${e.virustotal.checked} checked, ` +
-          `${e.virustotal.stale} from an older check, ` +
-          `${e.virustotal.deferred} queued for the next scan, ` +
-          `${e.virustotal.error} failed, ${e.virustotal.not_queried} not selected for lookup.</div>`,
+        coverage.virustotal_enabled === false
+          ? '<div class="coverage-warning">VirusTotal lookups are off: no API key was found. ' +
+            'Add VIRUSTOTAL_API_KEY to the .env file to turn them on (see the README). ' +
+            'Everything else works without it.</div>'
+          : `<div>VirusTotal: ${e.virustotal.checked} checked, ` +
+            `${e.virustotal.stale} from an older check, ` +
+            `${e.virustotal.deferred} queued for the next scan, ` +
+            `${e.virustotal.error} failed, ${e.virustotal.not_queried} not selected for lookup.</div>`,
       ];
 
       const problems = coverage.scanners.filter(s => s.status !== 'complete');

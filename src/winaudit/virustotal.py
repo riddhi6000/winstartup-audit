@@ -42,6 +42,12 @@ def _respect_rate_limit():
     _last_call_time = time.monotonic()
 
 
+def is_configured() -> bool:
+    """Whether a VirusTotal API key is available. Without one, lookups are
+    switched off for the scan instead of failing once per file."""
+    return bool(os.environ.get("VIRUSTOTAL_API_KEY"))
+
+
 def check_hash(file_hash: str) -> dict:
     """Looks up a file's hash on VirusTotal. Returns:
     - {"found": True, "malicious_count": int, "total_engines": int, "checked_at": iso-string}

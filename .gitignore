@@ -18,3 +18,8 @@ hash_cache.db
 scan-*.json
 "@ | Set-Content -Encoding ascii .gitignore
 baseline_history/
+scan*.json
+report*.json
+reports/
+*.egg-info/
+build/
