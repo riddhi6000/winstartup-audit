@@ -307,6 +307,11 @@ def perform_scan() -> tuple[list[dict], dict]:
             )
         except OSError as exc:
             vt_result = {"error": f"File could not be read ({exc.strerror or exc})"}
+        except Exception:
+            # A VirusTotal lookup is extra evidence. Whatever goes wrong
+            # inside one must cost that file its lookup, not the whole scan.
+            logger.exception("VirusTotal lookup failed unexpectedly")
+            vt_result = {"error": "Lookup failed unexpectedly; see the server console"}
 
         if vt_result.get("network_call"):
             requests_left -= 1

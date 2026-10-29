@@ -25,6 +25,8 @@ FOUND_MAX_AGE = timedelta(days=7)
 NOT_FOUND_MAX_AGE = timedelta(days=1)
 
 MISSING_KEY_ERROR = "VIRUSTOTAL_API_KEY not set in .env"
+UNREADABLE_ANSWER_ERROR = "VirusTotal returned an answer that could not be read"
+NO_RESULTS_ERROR = "VirusTotal has no analysis results for this file yet"
 
 _last_call_time = 0.0
 
@@ -78,17 +80,26 @@ def check_hash(file_hash: str) -> dict:
     if response.status_code != 200:
         return {"error": f"VirusTotal returned status {response.status_code}"}
 
-    data = response.json()
-    stats = data["data"]["attributes"]["last_analysis_stats"]
-    malicious = stats.get("malicious", 0)
-    suspicious = stats.get("suspicious", 0)
+    # The answer comes from outside, so its shape is checked rather than
+    # trusted: anything unexpected becomes an error result for this one file
+    # and never an exception that would abort the whole scan.
+    try:
+        stats = response.json()["data"]["attributes"]["last_analysis_stats"]
+        malicious = _engine_count(stats, "malicious")
+        suspicious = _engine_count(stats, "suspicious")
 
-    # Only engines that actually gave a verdict count. Engines that timed
-    # out, failed, or do not support this file type said nothing, so
-    # counting them would make a detection look rarer than it is.
-    total = malicious + suspicious + stats.get("undetected", 0) + stats.get("harmless", 0)
+        # Only engines that actually gave a verdict count. Engines that timed
+        # out, failed, or do not support this file type said nothing, so
+        # counting them would make a detection look rarer than it is.
+        total = malicious + suspicious + _engine_count(stats, "undetected") + _engine_count(stats, "harmless")
+        if total == 0:
+            # keeps a file VirusTotal knows from reading as "not found"
+            total = sum(_engine_count(stats, name) for name in stats)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return {"error": UNREADABLE_ANSWER_ERROR}
+
     if total == 0:
-        total = sum(stats.values())  # keeps a file VirusTotal knows from reading as "not found"
+        return {"error": NO_RESULTS_ERROR}
 
     return {
         "found": True,
@@ -96,6 +107,15 @@ def check_hash(file_hash: str) -> dict:
         "total_engines": total,
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
+
+def _engine_count(stats: dict, name: str) -> int:
+    """One engine-count field from VirusTotal's answer: a whole number that
+    is not negative. Anything else means the answer cannot be trusted."""
+    value = stats.get(name, 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"unexpected value for {name!r}")
+    return value
+
 
 def _parse_time(value) -> datetime | None:
     """Reads a stored timestamp. Timestamps without a time zone are taken

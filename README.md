@@ -170,6 +170,8 @@ data is reproduced, never the file). The suite runs on Windows in GitHub Actions
 - The baseline checksum is not authentication, and a program swapped without any recorded
   fingerprint cannot be detected until a baseline containing it is saved.
 - The free VirusTotal tier limits how fast coverage of new files grows.
+- Programs that cannot be read, such as Microsoft Store app files, get no fingerprint, so a later
+  swap of them cannot be detected; the dashboard counts them.
 
 ## Future work
 

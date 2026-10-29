@@ -14,6 +14,7 @@ SIGNATURE_STATES = ("checked", "inconclusive", "skipped", "not_applicable")
 VIRUSTOTAL_STATES = ("checked", "stale", "deferred", "error", "not_queried")
 VERIFICATION_STATES = ("complete", "partial", "none")
 PAYLOAD_STATES = ("found", "missing", "unexpanded", "unresolved", "not_applicable")
+FINGERPRINT_STATES = ("recorded", "unavailable", "not_applicable")
 
 # Programs whose job is to start other code (a DLL, a script, a group of
 # services). Their own signature says nothing about what they load, so an
@@ -94,6 +95,26 @@ def verification_state(result: dict, executable: str, signature: str) -> str:
     return "complete" if loads_a_dll else "partial"
 
 
+def fingerprint_state(result: dict, executable: str) -> str:
+    """Whether the program file (and the file it loads) could be fingerprinted.
+    Without a fingerprint, a later swap of that file cannot be detected, so
+    the gap is reported rather than left silent.
+
+    recorded       -- every file that was found has a fingerprint
+    unavailable    -- a found file could not be read
+    not_applicable -- there was no file to fingerprint
+    """
+    expected = []
+    if executable == "found":
+        expected.append(result.get("sha256"))
+    if result.get("payload_state") == "found":
+        expected.append(result.get("payload_sha256"))
+
+    if not expected:
+        return "not_applicable"
+    return "recorded" if all(expected) else "unavailable"
+
+
 def classify_result(result: dict, executable: str) -> dict:
     """The per-entry record of which checks actually happened. `executable`
     is the state from risk.resolve_executable, so coverage and scoring can
@@ -105,6 +126,7 @@ def classify_result(result: dict, executable: str) -> dict:
         "virustotal": virustotal_state(result.get("virustotal")),
         "verification": verification_state(result, executable, signature),
         "payload": result.get("payload_state") or "not_applicable",
+        "fingerprint": fingerprint_state(result, executable),
     }
 
 
@@ -134,5 +156,6 @@ def build_coverage(reports: list[ScanReport], results: list[dict]) -> dict:
             "virustotal": _counts(results, "virustotal", VIRUSTOTAL_STATES),
             "verification": _counts(results, "verification", VERIFICATION_STATES),
             "payload": _counts(results, "payload", PAYLOAD_STATES),
+            "fingerprint": _counts(results, "fingerprint", FINGERPRINT_STATES),
         },
     }

@@ -93,6 +93,7 @@ def test_every_result_records_which_checks_happened(monkeypatch):
         "virustotal": "not_queried",
         "verification": "none",
         "payload": "not_applicable",
+        "fingerprint": "not_applicable",
     }
     assert summary["entries"]["total"] == 1
     assert summary["entries"]["executable"]["unexpanded"] == 1
@@ -387,3 +388,25 @@ def test_manual_to_auto_adds_a_single_point(client, monkeypatch):
     body = scan_against(client, monkeypatch, current, baseline)
 
     assert body["entries"][0]["score"] == 1
+
+
+def test_a_file_that_cannot_be_read_is_counted_as_not_fingerprinted(monkeypatch):
+    entry = make_entry(r"C:\Locked\app.exe")
+    scanner = SimpleNamespace(scan=lambda: ScanReport(scanner="Registry Run Key", entries=[entry]))
+
+    def locked(path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(api, "SCANNERS", [scanner])
+    monkeypatch.setattr(api.signature, "batch_check", lambda paths: {})
+    monkeypatch.setattr(api.os.path, "exists", lambda path: True)
+    monkeypatch.setattr(api.hash_cache, "compute_sha256", locked)
+    monkeypatch.setattr(
+        api.virustotal, "check_file",
+        lambda path, allow_network=True: {"deferred": True, "network_call": False, "from_cache": False},
+    )
+
+    results, summary = api.perform_scan()
+
+    assert results[0]["checks"]["fingerprint"] == "unavailable"
+    assert summary["entries"]["fingerprint"]["unavailable"] == 1

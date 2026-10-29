@@ -34,6 +34,7 @@ def test_classify_result_combines_the_checks():
     result = {
         "signature_status": "Valid",
         "executable_path": r"C:\Apps\app.exe",
+        "sha256": "a" * 64,
         "virustotal": {"found": True, "malicious_count": 0},
     }
 
@@ -43,6 +44,7 @@ def test_classify_result_combines_the_checks():
         "virustotal": "checked",
         "verification": "complete",
         "payload": "not_applicable",
+        "fingerprint": "recorded",
     }
 
 
@@ -55,6 +57,7 @@ def test_classify_result_for_a_file_that_was_never_examined():
         "virustotal": "not_queried",
         "verification": "none",
         "payload": "not_applicable",
+        "fingerprint": "not_applicable",
     }
 
 
@@ -85,9 +88,9 @@ def test_build_coverage_counts_every_state_including_zeros():
     ]
     results = [
         {"checks": {"executable": "found", "signature": "checked", "virustotal": "checked",
-                    "verification": "complete", "payload": "found"}},
+                    "verification": "complete", "payload": "found", "fingerprint": "recorded"}},
         {"checks": {"executable": "unexpanded", "signature": "not_applicable", "virustotal": "not_queried",
-                    "verification": "none", "payload": "not_applicable"}},
+                    "verification": "none", "payload": "not_applicable", "fingerprint": "unavailable"}},
     ]
 
     summary = coverage.build_coverage(reports, results)
@@ -103,6 +106,7 @@ def test_build_coverage_counts_every_state_including_zeros():
     assert summary["entries"]["signature"]["inconclusive"] == 0
     assert summary["entries"]["virustotal"]["error"] == 0
     assert summary["entries"]["verification"] == {"complete": 1, "partial": 0, "none": 1}
+    assert summary["entries"]["fingerprint"] == {"recorded": 1, "unavailable": 1, "not_applicable": 0}
     assert summary["entries"]["payload"] == {
         "found": 1, "missing": 0, "unexpanded": 0, "unresolved": 0, "not_applicable": 1,
     }
@@ -146,3 +150,34 @@ def test_host_program_stays_partial_when_what_it_loads_was_not_fully_checked(ove
 def test_payload_state_is_recorded_in_the_checks():
     assert coverage.classify_result(host_result(), "found")["payload"] == "found"
     assert coverage.classify_result(host_result(payload_state="missing"), "found")["payload"] == "missing"
+
+
+# ---- fingerprints --------------------------------------------------------------
+
+def test_fingerprint_recorded_when_every_found_file_has_one():
+    result = {"sha256": "a" * 64}
+
+    assert coverage.fingerprint_state(result, "found") == "recorded"
+
+
+def test_fingerprint_unavailable_when_the_program_could_not_be_read():
+    assert coverage.fingerprint_state({"sha256": None}, "found") == "unavailable"
+
+
+def test_fingerprint_covers_the_loaded_file_too():
+    both = {"sha256": "a" * 64, "payload_state": "found", "payload_sha256": "b" * 64}
+    payload_unreadable = {"sha256": "a" * 64, "payload_state": "found", "payload_sha256": None}
+
+    assert coverage.fingerprint_state(both, "found") == "recorded"
+    assert coverage.fingerprint_state(payload_unreadable, "found") == "unavailable"
+
+
+def test_fingerprint_not_applicable_when_there_is_no_file():
+    assert coverage.fingerprint_state({"sha256": None}, "missing") == "not_applicable"
+    assert coverage.fingerprint_state({}, "unexpanded") == "not_applicable"
+
+
+def test_a_missing_loaded_file_is_not_expected_to_have_a_fingerprint():
+    result = {"sha256": "a" * 64, "payload_state": "missing", "payload_sha256": None}
+
+    assert coverage.fingerprint_state(result, "found") == "recorded"

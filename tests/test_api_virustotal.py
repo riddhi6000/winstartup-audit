@@ -193,3 +193,46 @@ def test_virustotal_reason_describes_what_the_engines_said(monkeypatch):
         "VirusTotal: 50 of 70 engines flagged this file as malicious or suspicious "
         "— strong consensus"
     )
+
+
+def test_an_unexpected_failure_inside_a_lookup_does_not_abort_the_scan(monkeypatch):
+    prepare(monkeypatch, {
+        r"C:\Apps\broken.exe": ("NotSigned", None),
+        r"C:\Apps\fine.exe": ("NotSigned", None),
+    })
+
+    def check_file(path, allow_network=True):
+        if "broken" in path:
+            raise KeyError("data")
+        return clean_result(path, allow_network)
+
+    monkeypatch.setattr(api.virustotal, "check_file", check_file)
+
+    results, summary = api.perform_scan()
+
+    named = by_name(results)
+    assert "Lookup failed unexpectedly" in named["broken.exe"]["virustotal"]["error"]
+    assert named["fine.exe"]["virustotal"]["found"] is True
+    assert summary["entries"]["virustotal"]["error"] == 1
+
+
+def test_a_garbled_virustotal_answer_costs_one_lookup_not_the_scan(monkeypatch):
+    prepare(monkeypatch, {r"C:\Apps\odd.exe": ("NotSigned", None)})
+    monkeypatch.setenv("VIRUSTOTAL_API_KEY", "test-key")
+    monkeypatch.setattr(virustotal, "_respect_rate_limit", lambda: None)
+
+    def garbled():
+        raise ValueError("Expecting value")
+
+    monkeypatch.setattr(
+        virustotal.requests, "get",
+        lambda *a, **k: SimpleNamespace(status_code=200, json=garbled),
+    )
+    monkeypatch.setattr(api.hash_cache, "compute_sha256", lambda path: "d" * 64)
+    monkeypatch.setattr(virustotal.hash_cache, "compute_sha256", lambda path: "d" * 64)
+
+    results, summary = api.perform_scan()
+
+    assert results[0]["virustotal"]["error"] == virustotal.UNREADABLE_ANSWER_ERROR
+    assert results[0]["score"] == 2  # still scored on the evidence we do have
+    assert summary["entries"]["virustotal"]["error"] == 1

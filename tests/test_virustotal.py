@@ -14,7 +14,15 @@ NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
 
 
 def iso(days_ago):
+    """A time relative to the fixed NOW, for tests that pass now=NOW themselves."""
     return (NOW - timedelta(days=days_ago)).isoformat()
+
+
+def ago(days):
+    """A time relative to the real clock. check_file judges freshness against the
+    real clock, so any test that goes through it must store times this way --
+    a fixed date would silently turn from "fresh" to "stale" as time passes."""
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
 
 @pytest.fixture
@@ -26,7 +34,7 @@ def sample_file(tmp_path):
 
 def store(sample_file, malicious, total, days_ago):
     file_hash = hash_cache.compute_sha256(sample_file)
-    hash_cache.store_result(file_hash, malicious, total, iso(days_ago))
+    hash_cache.store_result(file_hash, malicious, total, ago(days_ago))
     return file_hash
 
 
@@ -229,3 +237,80 @@ def test_a_known_file_with_no_verdicts_is_still_found(monkeypatch):
 
     assert result["found"] is True
     assert result["total_engines"] == 65
+
+
+# ---- answers that cannot be read ---------------------------------------------
+
+def fake_body(monkeypatch, json_function):
+    monkeypatch.setenv("VIRUSTOTAL_API_KEY", "test-key")
+    monkeypatch.setattr(virustotal, "_respect_rate_limit", lambda: None)
+    monkeypatch.setattr(
+        virustotal.requests, "get",
+        lambda *a, **k: SimpleNamespace(status_code=200, json=json_function),
+    )
+
+
+def not_json():
+    raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+
+@pytest.mark.parametrize("label, json_function", [
+    ("not JSON at all", not_json),
+    ("a JSON list", lambda: []),
+    ("a JSON string", lambda: "oops"),
+    ("no data section", lambda: {}),
+    ("data without attributes", lambda: {"data": {}}),
+    ("stats missing", lambda: {"data": {"attributes": {}}}),
+    ("stats is null", lambda: {"data": {"attributes": {"last_analysis_stats": None}}}),
+    ("stats is a list", lambda: {"data": {"attributes": {"last_analysis_stats": [1, 2]}}}),
+    ("counts are strings", lambda: {"data": {"attributes": {"last_analysis_stats": {"malicious": "3", "undetected": "60"}}}}),
+    ("a count is negative", lambda: {"data": {"attributes": {"last_analysis_stats": {"malicious": -1, "undetected": 60}}}}),
+    ("a count is a float", lambda: {"data": {"attributes": {"last_analysis_stats": {"malicious": 1.5, "undetected": 60}}}}),
+    ("a count is a boolean", lambda: {"data": {"attributes": {"last_analysis_stats": {"malicious": True, "undetected": 60}}}}),
+    ("only a malformed field to fall back on", lambda: {"data": {"attributes": {"last_analysis_stats": {"timeout": "x"}}}}),
+])
+def test_an_unreadable_answer_is_an_error_result_not_an_exception(monkeypatch, label, json_function):
+    fake_body(monkeypatch, json_function)
+
+    result = virustotal.check_hash("a" * 64)
+
+    assert set(result) == {"error"}, label
+
+
+def test_a_malformed_field_nobody_needs_does_not_spoil_a_valid_answer(monkeypatch):
+    fake_body(monkeypatch, lambda: {"data": {"attributes": {"last_analysis_stats": {
+        "malicious": 0, "undetected": 60, "timeout": "x"}}}})
+
+    result = virustotal.check_hash("a" * 64)
+
+    assert (result["malicious_count"], result["total_engines"]) == (0, 60)
+
+
+def test_unreadable_answers_name_the_problem(monkeypatch):
+    fake_body(monkeypatch, not_json)
+
+    assert virustotal.check_hash("a" * 64) == {"error": virustotal.UNREADABLE_ANSWER_ERROR}
+
+
+def test_empty_statistics_are_reported_as_no_results_not_as_a_verdict(monkeypatch):
+    fake_body(monkeypatch, lambda: {"data": {"attributes": {"last_analysis_stats": {}}}})
+
+    assert virustotal.check_hash("a" * 64) == {"error": virustotal.NO_RESULTS_ERROR}
+
+
+def test_an_unreadable_answer_is_not_stored(monkeypatch, sample_file):
+    fake_body(monkeypatch, not_json)
+
+    result = virustotal.check_file(sample_file)
+
+    assert result["error"] == virustotal.UNREADABLE_ANSWER_ERROR
+    assert hash_cache.get_cached_result(hash_cache.compute_sha256(sample_file)) is None
+
+
+def test_a_well_formed_answer_still_works(monkeypatch):
+    fake_body(monkeypatch, lambda: {"data": {"attributes": {"last_analysis_stats": {
+        "malicious": 2, "suspicious": 1, "undetected": 60, "harmless": 0, "timeout": 3}}}})
+
+    result = virustotal.check_hash("a" * 64)
+
+    assert (result["malicious_count"], result["total_engines"], result["found"]) == (3, 63, True)

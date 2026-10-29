@@ -353,6 +353,8 @@
           `a host program such as svchost or rundll32), ${e.verification.none} not verified.</div>`,
         `<div>Files loaded by host programs (DLLs, scripts): ${e.payload.found} found, ` +
           `${e.payload.missing} missing, ${e.payload.unexpanded + e.payload.unresolved} not resolved.</div>`,
+        `<div>Fingerprints (used to spot a program swapped later): ${e.fingerprint.recorded} recorded, ` +
+          `${e.fingerprint.unavailable} could not be read.</div>`,
         `<div>Executables: ${e.executable.found} found, ` +
           `${e.executable.unexpanded} with unexpanded variables, ` +
           `${e.executable.missing} not found, ${e.executable.no_path} without a path.</div>`,
@@ -395,10 +397,12 @@
       return parts.join(' · ');
     }
 
-    function verificationNote(level) {
-      if (level === 'none') return 'not verified';
-      if (level === 'partial') return 'partly verified';
-      return '';
+    function verificationNote(checks) {
+      const notes = [];
+      if (checks.verification === 'none') notes.push('not verified');
+      else if (checks.verification === 'partial') notes.push('partly verified');
+      if (checks.fingerprint === 'unavailable') notes.push('no fingerprint');
+      return notes.join(' · ');
     }
 
     function formatVirusTotal(vt) {
@@ -484,7 +488,7 @@
     function rowHtml(row) {
       const { entry, isNew, isChanged, previousCommand, changeNote } = row;
       return `
-        <td class="score-cell ${scoreClass(entry.score)}">${entry.score}<div class="verify-note">${verificationNote(entry.checks.verification)}</div></td>
+        <td class="score-cell ${scoreClass(entry.score)}">${entry.score}<div class="verify-note">${verificationNote(entry.checks)}</div></td>
         <td>
             ${isNew ? '<span class="diff-badge">NEW</span>' : ''}
             ${isChanged ? '<span class="diff-badge-modified">CHANGED</span>' : ''}
