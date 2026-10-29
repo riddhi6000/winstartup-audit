@@ -25,5 +25,11 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt
 
+      - name: Install the package
+        run: python -m pip install -e .
+
       - name: Run the tests
         run: python -m pytest -q
+
+      - name: Command-line smoke test
+        run: python -m winaudit --help

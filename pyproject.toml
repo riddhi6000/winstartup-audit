@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "winstartup-audit"
+version = "0.1.0"
+description = "Audits what starts on a Windows machine, checks what each entry really runs, and reports what changed."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "requests",
+    "python-dotenv",
+]
+
+[project.scripts]
+winaudit = "winaudit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

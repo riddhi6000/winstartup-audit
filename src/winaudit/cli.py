@@ -5,6 +5,7 @@
 """
 import argparse
 import json
+import ntpath
 import os
 import re
 import sys
@@ -25,26 +26,29 @@ STABLE_FIELDS = (
 STABLE_CHECKS = ("executable", "signature", "verification", "payload", "fingerprint")
 
 
-def redact(value, username=None, computer=None):
+def redact(value, username=None, computer=None, profile=None):
     """A copy of `value` (text, lists, dictionaries) with the things that
-    identify a person or machine replaced: the user's folder name, the user
-    and computer names, and Windows account identifiers (SIDs). For sharing
-    a report or a screenshot."""
+    identify a person or machine replaced: the folder name inside a Users
+    folder, the user name, the profile folder name, the computer name, and Windows
+    account identifiers (SIDs). For sharing a report or a screenshot.
+
+    Left alone on purpose: file hashes and COM class IDs. They identify
+    software, not a person, and a reader can look them up."""
     if isinstance(value, str):
         text = SID_PATTERN.sub("S-1-5-21-<redacted>", value)
         text = USER_FOLDER_PATTERN.sub(r"\1<user>", text)
         # The longer name goes first: a computer name often contains the
         # user's name, and replacing the short one first would leave a fragment.
-        names = sorted(((username, "<user>"), (computer, "<computer>")),
+        names = sorted(((username, "<user>"), (profile, "<user>"), (computer, "<computer>")),
                        key=lambda pair: len(pair[0] or ""), reverse=True)
         for name, placeholder in names:
             if name:
                 text = re.sub(rf"(?i)(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])", placeholder, text)
         return text
     if isinstance(value, list):
-        return [redact(item, username, computer) for item in value]
+        return [redact(item, username, computer, profile) for item in value]
     if isinstance(value, dict):
-        return {key: redact(item, username, computer) for key, item in value.items()}
+        return {key: redact(item, username, computer, profile) for key, item in value.items()}
     return value
 
 
@@ -130,10 +134,18 @@ def _run_scan(arguments) -> int:
         "entries": results,
     }
     if arguments.redact:
-        report = redact(report, os.environ.get("USERNAME"), os.environ.get("COMPUTERNAME"))
+        report = redact(
+            report,
+            username=os.environ.get("USERNAME"),
+            computer=os.environ.get("COMPUTERNAME"),
+            profile=ntpath.basename(os.environ.get("USERPROFILE", "").rstrip("\\/")) or None,
+        )
 
     if arguments.json:
         Path(arguments.json).write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+        if not arguments.redact:
+            print(f"Note: {arguments.json} contains your user name and machine details. "
+                  "Use --redact before sharing it, and do not commit it.", file=sys.stderr)
 
     print("\n".join(_summary_lines(report)))
     return 0

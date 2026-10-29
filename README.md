@@ -98,10 +98,11 @@ cd winstartup-audit
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+pip install -e .
 
 copy .env.example .env      # then put your VirusTotal API key in .env (optional)
 
-python -m uvicorn winaudit.api:app --app-dir src --reload
+python -m uvicorn winaudit.api:app --reload
 ```
 
 Open <http://127.0.0.1:8000> and click **Run Scan**. The first scan can take a few minutes

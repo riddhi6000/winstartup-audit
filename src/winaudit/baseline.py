@@ -284,11 +284,12 @@ def _loose_name(entry: dict) -> str:
     name = HASH_SUFFIX_PATTERN.sub("_<HASH>", name)
     name = VERSION_PATTERN.sub("<VERSION>", name)
 
-    # Per-user services (CDPUserSvc_1c2d9a and the like) get a new random
-    # suffix every sign-in. They are all hosted by svchost, which is what
-    # keeps this from masking an ordinary service whose name merely ends in
-    # a few hexadecimal characters.
-    if entry["source"] == "Windows Service" and "svchost.exe" in entry["command"].lower():
+    # Per-user services (CDPUserSvc_1c2d9a, CredentialEnrollmentManagerUserSvc_77ffc
+    # and the like) get a new random suffix every sign-in. Some run inside
+    # svchost and some as their own program, so the host is not used to tell
+    # them apart. Masking the suffix is safe because a matched pair must still
+    # run the same command, and its program file is fingerprint-checked too.
+    if entry["source"] == "Windows Service":
         name = PER_USER_SERVICE_SUFFIX.sub("_<ID>", name)
 
     return name
@@ -316,16 +317,11 @@ def _pair_rotated(new_entries: list[dict], removed_entries: list[dict]):
         available[_loose_key(entry)].append(entry)
 
     still_new = []
-    rotated = []
+    rotated = []  # (current entry, the entry it replaced)
     for entry in new_entries:
         candidates = available.get(_loose_key(entry))
         if candidates:
-            previous = candidates.pop(0)
-            rotated.append({
-                "source": entry["source"],
-                "name": entry["name"],
-                "previous_name": previous["name"],
-            })
+            rotated.append((entry, candidates.pop(0)))
         else:
             still_new.append(entry)
 
@@ -345,6 +341,24 @@ def _is_routine_update(
         and bool(current.get(publisher_field))
         and current.get(publisher_field) == baseline.get(publisher_field)
     )
+
+
+def _file_changes(current: dict, baseline: dict) -> list[dict]:
+    """The program file, and the file it loads, whose contents differ between
+    the baseline and now. A change is "routine" when the file is still validly
+    signed by the same publisher, as an ordinary update is."""
+    changes = []
+    for label, hash_field, publisher_field, signature_field in TRACKED_FILES:
+        current_hash = current.get(hash_field)
+        baseline_hash = baseline.get(hash_field)
+        if isinstance(current_hash, str) and isinstance(baseline_hash, str) and current_hash != baseline_hash:
+            changes.append({
+                "entry": current,
+                "file": label,
+                "previous_sha256": baseline_hash,
+                "routine": _is_routine_update(current, baseline, publisher_field, signature_field),
+            })
+    return changes
 
 
 def diff(current_entries: list[dict], baseline_entries: list[dict]) -> dict:
@@ -392,21 +406,10 @@ def diff(current_entries: list[dict], baseline_entries: list[dict]) -> dict:
             })
             changed_keys.add(key)
         else:
-            for label, hash_field, publisher_field, signature_field in TRACKED_FILES:
-                current_hash = current_entry.get(hash_field)
-                baseline_hash = baseline_entry.get(hash_field)
-                if isinstance(current_hash, str) and isinstance(baseline_hash, str) and current_hash != baseline_hash:
-                    routine = _is_routine_update(
-                        current_entry, baseline_entry, publisher_field, signature_field
-                    )
-                    binary_changed.append({
-                        "entry": current_entry,
-                        "file": label,
-                        "previous_sha256": baseline_hash,
-                        "routine": routine,
-                    })
-                    if not routine:
-                        changed_keys.add(key)
+            for change in _file_changes(current_entry, baseline_entry):
+                binary_changed.append(change)
+                if not change["routine"]:
+                    changed_keys.add(key)
 
         current_setting = _setting_of(current_entry)
         baseline_setting = _setting_of(baseline_entry)
@@ -420,7 +423,18 @@ def diff(current_entries: list[dict], baseline_entries: list[dict]) -> dict:
 
     new_entries = sorted((current_by_key[k] for k in new_keys), key=_sort_key)
     removed_entries = sorted((baseline_by_key[k] for k in removed_keys), key=_sort_key)
-    new_entries, removed_entries, rotated = _pair_rotated(new_entries, removed_entries)
+    new_entries, removed_entries, rotated_pairs = _pair_rotated(new_entries, removed_entries)
+
+    # A matched pair is the same thing under a new random name, so it gets the
+    # same check as any other entry: a different program file behind it is
+    # reported, whatever the name did.
+    for current_entry, baseline_entry in rotated_pairs:
+        binary_changed.extend(_file_changes(current_entry, baseline_entry))
+
+    rotated = [
+        {"source": current["source"], "name": current["name"], "previous_name": previous["name"]}
+        for current, previous in rotated_pairs
+    ]
 
     return {
         "new": new_entries,

@@ -259,15 +259,70 @@ def test_per_user_service_suffix_rotation_is_not_reported():
     ]
 
 
-def test_hex_suffix_on_an_ordinary_service_is_still_reported():
+def test_per_user_service_that_runs_as_its_own_program_rotates_too():
+    command = r"C:\WINDOWS\system32\CredentialEnrollmentManager.exe"
+    baseline = [entry("CredentialEnrollmentManagerUserSvc_1c2d9a", command, source="Windows Service", location="SCM")]
+    current = [entry("CredentialEnrollmentManagerUserSvc_77ffc", command, source="Windows Service", location="SCM")]
+
+    result = diff(current, baseline)
+
+    assert result["new"] == [] and result["removed"] == []
+    assert result["rotated_count"] == 1
+
+
+def test_hex_suffix_on_a_service_that_runs_a_different_program_is_still_reported():
     baseline = [entry("Updater_ab12", r"C:\Apps\updater.exe", source="Windows Service", location="SCM")]
-    current = [entry("Updater_cd34", r"C:\Apps\updater.exe", source="Windows Service", location="SCM")]
+    current = [entry("Updater_cd34", r"C:\Temp\other.exe", source="Windows Service", location="SCM")]
 
     result = diff(current, baseline)
 
     assert [e["name"] for e in result["new"]] == ["Updater_cd34"]
     assert [e["name"] for e in result["removed"]] == ["Updater_ab12"]
     assert result["rotated_count"] == 0
+
+
+def test_hex_suffix_is_only_masked_for_services():
+    baseline = [entry("Item_ab12", r"C:\Apps\app.exe")]
+    current = [entry("Item_cd34", r"C:\Apps\app.exe")]
+
+    result = diff(current, baseline)
+
+    assert len(result["new"]) == 1 and result["rotated_count"] == 0
+
+
+def rotated_service(name, **overrides):
+    base = stored(source="Windows Service", location="SCM", name=name, command=r"C:\Apps\svc.exe")
+    base.update(overrides)
+    return base
+
+
+def test_a_renamed_service_with_a_swapped_unsigned_program_is_reported():
+    baseline = [rotated_service("Svc_ab12")]
+    current = [rotated_service("Svc_cd34", sha256="b" * 64, signature_status="NotSigned", publisher=None)]
+
+    result = diff(current, baseline)
+
+    assert result["rotated_count"] == 1
+    assert len(result["binary_changed"]) == 1
+    change = result["binary_changed"][0]
+    assert change["routine"] is False
+    assert change["entry"]["name"] == "Svc_cd34"
+
+
+def test_a_renamed_service_with_an_ordinary_update_is_routine():
+    baseline = [rotated_service("Svc_ab12")]
+    current = [rotated_service("Svc_cd34", sha256="b" * 64)]
+
+    change = diff(current, baseline)["binary_changed"][0]
+
+    assert change["routine"] is True
+
+
+def test_a_renamed_service_with_the_same_program_reports_no_file_change():
+    result = diff([rotated_service("Svc_cd34")], [rotated_service("Svc_ab12")])
+
+    assert result["rotated_count"] == 1
+    assert result["binary_changed"] == []
 
 
 def test_guid_in_a_name_rotates_without_being_reported():

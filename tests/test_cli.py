@@ -222,3 +222,45 @@ def test_scanner_problems_are_shown(monkeypatch, capsys):
     cli.main(["scan"])
 
     assert "Scanner problem: Scheduled Task failed: PowerShell exited with code 1" in capsys.readouterr().out
+
+
+# ---- redaction scope and the reminder about private reports --------------------------
+
+def test_profile_folder_name_is_redacted_where_it_differs_from_the_user_name():
+    text = "created by riddh for Riddhi"
+
+    result = cli.redact(text, username="Riddhi", profile="riddh")
+
+    assert result == "created by <user> for <user>"
+
+
+def test_hashes_and_class_ids_are_left_alone_on_purpose():
+    value = {"sha256": "a" * 64, "com_class_id": "{D44377B8-1F2F-4FAA-9C8E-6C4AD2928E47}"}
+
+    assert cli.redact(value, username="Riddhi", computer="RIDDHI-PC") == value
+
+
+def test_a_report_written_without_redaction_comes_with_a_reminder(fake_scan, tmp_path, capsys):
+    cli.main(["scan", "--json", str(tmp_path / "report.json")])
+
+    assert "Use --redact before sharing it" in capsys.readouterr().err
+
+
+def test_no_reminder_when_redacting_or_when_nothing_is_written(fake_scan, tmp_path, capsys):
+    cli.main(["scan", "--json", str(tmp_path / "report.json"), "--redact"])
+    assert "--redact before sharing" not in capsys.readouterr().err
+
+    cli.main(["scan"])
+    assert "--redact before sharing" not in capsys.readouterr().err
+
+
+def test_the_profile_folder_name_is_taken_from_the_environment(fake_scan, tmp_path, monkeypatch):
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\riddh")
+    monkeypatch.setenv("USERNAME", "Riddhi")
+    results = [entry("Item", command=r"D:\Backups\riddh-old\app.exe and riddh")]
+    monkeypatch.setattr(api, "perform_scan", lambda: (results, coverage()))
+    path = tmp_path / "report.json"
+
+    cli.main(["scan", "--json", str(path), "--redact"])
+
+    assert "riddh" not in path.read_text(encoding="utf-8")

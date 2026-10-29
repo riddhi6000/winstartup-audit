@@ -1,0 +1,37 @@
+name: windows-scan
+
+# A real scan of the Windows machine GitHub gives the job: real registry,
+# real services, real PowerShell. The unit tests mock all of those, so this
+# is the check that the scanners work on an actual Windows installation.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  scan:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -e .
+
+      - name: Scan this machine
+        run: python -m winaudit scan --no-virustotal --redact --json scan.json
+
+      - name: Check the report
+        run: python -c "import json; r = json.load(open('scan.json', encoding='utf-8')); print(r['total_entries'], 'entries,', r['flagged_count'], 'flagged'); print({s['scanner']: s['status'] for s in r['coverage']['scanners']}); assert r['total_entries'] > 50"
+
+      - name: Scan again and compare
+        run: |
+          python -m winaudit scan --no-virustotal --redact --json scan2.json
+          python -m winaudit compare scan.json scan2.json
