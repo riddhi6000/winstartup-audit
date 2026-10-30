@@ -2,6 +2,7 @@
 
     python -m winaudit scan [--json report.json] [--redact] [--no-virustotal]
     python -m winaudit compare first.json second.json
+    python -m winaudit check report.json [--min-entries N]
 """
 import argparse
 import json
@@ -178,6 +179,35 @@ def _run_compare(arguments) -> int:
     return 0 if identical else 1
 
 
+def _run_check(arguments) -> int:
+    """Read a report and say whether the scan looks sound: it found a plausible
+    number of entries and no scanner failed outright. Used by the automated
+    scan of a real Windows machine, where the unit tests cannot reach."""
+    try:
+        report = json.loads(Path(arguments.report).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"Could not read {arguments.report}: {exc}", file=sys.stderr)
+        return 2
+
+    scanners = report["coverage"]["scanners"]
+    print(f"{report['total_entries']} entries, {report['flagged_count']} flagged.")
+    for scanner in scanners:
+        print(f"  {scanner['scanner']}: {scanner['status']} ({scanner['entry_count']} entries)")
+        for error in scanner["errors"]:
+            print(f"      {error}")
+
+    problems = []
+    if report["total_entries"] < arguments.min_entries:
+        problems.append(f"fewer than {arguments.min_entries} entries were found")
+    failed = [scanner["scanner"] for scanner in scanners if scanner["status"] == "failed"]
+    if failed:
+        problems.append("scanners failed: " + ", ".join(failed))
+
+    for problem in problems:
+        print(f"Problem: {problem}", file=sys.stderr)
+    return 1 if problems else 0
+
+
 def main(argv=None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # reasons contain dashes the console may not have
@@ -197,6 +227,12 @@ def main(argv=None) -> int:
     compare.add_argument("first")
     compare.add_argument("second")
     compare.set_defaults(handler=_run_compare)
+
+    check = commands.add_parser("check", help="check that a report looks like a sound scan")
+    check.add_argument("report")
+    check.add_argument("--min-entries", type=int, default=1,
+                       help="fail if fewer entries than this were found (default: 1)")
+    check.set_defaults(handler=_run_check)
 
     arguments = parser.parse_args(argv)
     return arguments.handler(arguments)

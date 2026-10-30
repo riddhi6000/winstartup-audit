@@ -264,3 +264,47 @@ def test_the_profile_folder_name_is_taken_from_the_environment(fake_scan, tmp_pa
     cli.main(["scan", "--json", str(path), "--redact"])
 
     assert "riddh" not in path.read_text(encoding="utf-8")
+
+
+# ---- check ----------------------------------------------------------------------------
+
+def checked_report(total=100, scanners=None):
+    scanners = scanners if scanners is not None else [
+        {"scanner": "Registry Run Key", "status": "complete", "entry_count": 40, "errors": []},
+        {"scanner": "Windows Service", "status": "partial", "entry_count": 60,
+         "errors": ["COM class registrations could not be read"]},
+    ]
+    return {"total_entries": total, "flagged_count": 0,
+            "coverage": {"scanners": scanners, "entries": {}}, "entries": []}
+
+
+def test_check_passes_a_sound_scan_and_shows_each_scanner(tmp_path, capsys):
+    path = write(tmp_path / "report.json", checked_report())
+
+    assert cli.main(["check", path, "--min-entries", "50"]) == 0
+
+    output = capsys.readouterr().out
+    assert "100 entries, 0 flagged." in output
+    assert "Registry Run Key: complete (40 entries)" in output
+    assert "Windows Service: partial (60 entries)" in output
+    assert "COM class registrations could not be read" in output
+
+
+def test_check_fails_when_too_few_entries_were_found(tmp_path, capsys):
+    path = write(tmp_path / "report.json", checked_report(total=3))
+
+    assert cli.main(["check", path, "--min-entries", "50"]) == 1
+    assert "fewer than 50 entries" in capsys.readouterr().err
+
+
+def test_check_fails_when_a_scanner_failed_outright(tmp_path, capsys):
+    failed = [{"scanner": "Scheduled Task", "status": "failed", "entry_count": 0, "errors": ["PowerShell exited with code 1"]}]
+    path = write(tmp_path / "report.json", checked_report(scanners=failed))
+
+    assert cli.main(["check", path]) == 1
+    assert "scanners failed: Scheduled Task" in capsys.readouterr().err
+
+
+def test_check_reports_an_unreadable_file(tmp_path, capsys):
+    assert cli.main(["check", str(tmp_path / "missing.json")]) == 2
+    assert "Could not read" in capsys.readouterr().err
